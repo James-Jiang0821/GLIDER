@@ -1,0 +1,238 @@
+#include <Arduino.h>
+
+#include "controllers/safety_manager.hpp"
+#include "config/constants.hpp"
+#include "protocols/can_messages.hpp"
+
+// Paste this file into src/main.cpp to run a serial safety injection test.
+// It validates soft faults, hard faults, debounce, and hard-fault latching.
+
+SafetyManager safety;
+
+static uint32_t g_pass = 0;
+static uint32_t g_fail = 0;
+
+void check(bool cond, const char* msg) {
+    if (cond) {
+        g_pass++;
+        Serial.print("[PASS] ");
+    } else {
+        g_fail++;
+        Serial.print("[FAIL] ");
+    }
+    Serial.println(msg);
+}
+
+SafetyManager::Inputs nominalInputs() {
+    SafetyManager::Inputs in{};
+    in.tof_valid = true;
+    return in;
+}
+
+SafetyManager::Output runFor(SafetyManager::Inputs in, float dt_s, int steps) {
+    SafetyManager::Output out{};
+    for (int i = 0; i < steps; i++) {
+        out = safety.update(in, dt_s);
+    }
+    return out;
+}
+
+int stepsToExceed(float confirm_s, float dt_s) {
+    if (confirm_s <= 0.0f || dt_s <= 0.0f) {
+        return 1;
+    }
+    return static_cast<int>(confirm_s / dt_s) + 2;
+}
+
+void testNominalNoFault() {
+    safety.reset();
+    auto in = nominalInputs();
+    auto out = safety.update(in, 0.01f);
+
+    check(!out.hard_fault, "Nominal: hard fault is false");
+    check(!out.soft_fault, "Nominal: soft fault is false");
+    check(out.hard_fault_a == 0, "Nominal: hard_fault_a == 0");
+    check(out.hard_fault_b == 0, "Nominal: hard_fault_b == 0");
+}
+
+void testSoftFaultSetAndClear() {
+    safety.reset();
+    auto in = nominalInputs();
+
+    in.cmd_timeout_small = true;
+    auto out = safety.update(in, 0.01f);
+    check(out.soft_fault, "Soft: cmd timeout small sets soft_fault");
+    check((out.soft_fault_bits & can::FAULT_CMD_TO) != 0, "Soft: FAULT_CMD_TO bit set");
+    check(!out.hard_fault, "Soft: hard fault remains false");
+
+    in.cmd_timeout_small = false;
+    out = safety.update(in, 0.01f);
+    check(!out.soft_fault, "Soft: clears when condition clears");
+    check((out.soft_fault_bits & can::FAULT_CMD_TO) == 0, "Soft: FAULT_CMD_TO bit clears");
+}
+
+void testLeakDebounceAndLatch() {
+    safety.reset();
+    auto in = nominalInputs();
+    in.leak_raw = true;
+    const float dt = 0.01f;
+
+    // Stay below confirm time first.
+    int below_steps = static_cast<int>(config::LEAK_DEBOUNCE_S / dt) - 1;
+    if (below_steps < 1) below_steps = 1;
+    auto out = runFor(in, dt, below_steps);
+    check(!out.hard_fault, "Leak: not faulted before debounce time");
+
+    // Then exceed confirm time with margin.
+    out = runFor(in, dt, stepsToExceed(config::LEAK_DEBOUNCE_S, dt));
+    check(out.hard_fault, "Leak: hard fault after debounce time");
+    check((out.hard_fault_a & can::FAULT_LEAK) != 0, "Leak: FAULT_LEAK bit set");
+    check(out.first_hard_fault == 1, "Leak: first_hard_fault code is leak (1)");
+
+    in.leak_raw = false;
+    out = runFor(in, dt, 10);
+    check(out.hard_fault, "Leak: hard fault remains latched after condition clears");
+    check((out.hard_fault_a & can::FAULT_LEAK) != 0, "Leak: FAULT_LEAK bit remains latched");
+}
+
+void testDriverFaultPitchAndRoll() {
+    auto in = nominalInputs();
+    const float dt = 0.01f;
+    const int steps = stepsToExceed(config::DRIVER_FAULT_DEBOUNCE_S, dt);
+
+    safety.reset();
+    in.driver_fault_pitch_raw = true;
+    auto out = runFor(in, dt, steps);
+    check((out.hard_fault_a & can::FAULT_DRIVER_P) != 0, "Driver: pitch FLT sets FAULT_DRIVER_P");
+
+    safety.reset();
+    in = nominalInputs();
+    in.driver_fault_roll_raw = true;
+    out = runFor(in, dt, steps);
+    check((out.hard_fault_a & can::FAULT_DRIVER_R) != 0, "Driver: roll FLT sets FAULT_DRIVER_R");
+}
+
+void testHomingFailBits() {
+    auto in = nominalInputs();
+
+    safety.reset();
+    in.homing_failed_pitch = true;
+    auto out = safety.update(in, 0.01f);
+    check((out.hard_fault_a & can::FAULT_HOMING_FAILED_P) != 0, "Homing: pitch fail bit set");
+
+    safety.reset();
+    in = nominalInputs();
+    in.homing_failed_roll = true;
+    out = safety.update(in, 0.01f);
+    check((out.hard_fault_a & can::FAULT_HOMING_FAILED_R) != 0, "Homing: roll fail bit set");
+}
+
+void testStallBits() {
+    auto in = nominalInputs();
+    const float dt = 0.1f;
+    const int steps = stepsToExceed(config::STALL_CONFIRM_S, dt);
+
+    safety.reset();
+    in.stall_pitch_raw = true;
+    auto out = runFor(in, dt, steps);
+    check((out.hard_fault_b & can::FAULT_STALL_P) != 0, "Stall: pitch stall sets FAULT_STALL_P");
+
+    safety.reset();
+    in = nominalInputs();
+    in.stall_roll_raw = true;
+    out = runFor(in, dt, steps);
+    check((out.hard_fault_b & can::FAULT_STALL_R) != 0, "Stall: roll stall sets FAULT_STALL_R");
+}
+
+void testBmsFaultMapping() {
+    auto in = nominalInputs();
+
+    safety.reset();
+    in.bms_timeout_large = true;
+    auto out = safety.update(in, 0.01f);
+    check((out.hard_fault_a & can::FAULT_BMS_TO_L) != 0, "BMS: timeout large maps to FAULT_BMS_TO_L (Hard A)");
+
+    safety.reset();
+    in = nominalInputs();
+    in.bms_overcurrent = true;
+    out = safety.update(in, 0.01f);
+    check((out.hard_fault_b & can::FAULT_BMS_OC) != 0, "BMS: overcurrent maps to FAULT_BMS_OC (Hard B)");
+
+    safety.reset();
+    in = nominalInputs();
+    in.bms_switch_fault = true;
+    out = safety.update(in, 0.01f);
+    check((out.hard_fault_b & can::FAULT_BMS_SWITCH) != 0, "BMS: switch fault maps to FAULT_BMS_SWITCH (Hard B)");
+}
+
+void testFirstFaultLatchOrder() {
+    safety.reset();
+    auto in = nominalInputs();
+    in.leak_raw = true;
+    const float dt = 0.01f;
+
+    // Trigger leak first.
+    auto out = runFor(in, dt, stepsToExceed(config::LEAK_DEBOUNCE_S, dt));
+    check(out.first_hard_fault == 1, "First fault: leak recorded first");
+
+    // Trigger another hard fault afterward.
+    in.driver_fault_roll_raw = true;
+    out = runFor(in, dt, stepsToExceed(config::DRIVER_FAULT_DEBOUNCE_S, dt));
+    check((out.hard_fault_a & can::FAULT_DRIVER_R) != 0, "First fault: second fault still latches bit");
+    check(out.first_hard_fault == 1, "First fault: remains first event (leak)");
+}
+
+void testResetClearsLatchedHardFaults() {
+    auto in = nominalInputs();
+    in.leak_raw = true;
+    const float dt = 0.01f;
+    auto out = runFor(in, dt, stepsToExceed(config::LEAK_DEBOUNCE_S, dt));
+    check(out.hard_fault, "Reset test: hard fault latched before reset");
+
+    safety.reset();
+    out = safety.update(nominalInputs(), 0.01f);
+    check(!out.hard_fault, "Reset test: hard fault cleared after reset");
+    check(out.hard_fault_a == 0 && out.hard_fault_b == 0, "Reset test: hard fault bitfields cleared");
+    check(out.first_hard_fault == 0, "Reset test: first_hard_fault cleared");
+}
+
+void runAllTests() {
+    Serial.println();
+    Serial.println("=== SAFETY INJECTION TEST (P&R) ===");
+
+    testNominalNoFault();
+    testSoftFaultSetAndClear();
+    testLeakDebounceAndLatch();
+    testDriverFaultPitchAndRoll();
+    testHomingFailBits();
+    testStallBits();
+    testBmsFaultMapping();
+    testFirstFaultLatchOrder();
+    testResetClearsLatchedHardFaults();
+
+    Serial.println();
+    Serial.println("=== SUMMARY ===");
+    Serial.print("PASS: ");
+    Serial.println(g_pass);
+    Serial.print("FAIL: ");
+    Serial.println(g_fail);
+    Serial.println("================");
+}
+
+void setup() {
+    Serial.begin(115200);
+    delay(1500);
+
+    SafetyManager::Config cfg{};
+    cfg.leak_debounce_s = config::LEAK_DEBOUNCE_S;
+    cfg.driver_fault_debounce_s = config::DRIVER_FAULT_DEBOUNCE_S;
+    cfg.stall_confirm_s = config::STALL_CONFIRM_S;
+    cfg.bms_temp_confirm_s = config::BMS_TEMP_CONFIRM_S;
+    safety.configure(cfg);
+
+    runAllTests();
+}
+
+void loop() {
+    // Keep idle. Reboot to rerun tests.
+}

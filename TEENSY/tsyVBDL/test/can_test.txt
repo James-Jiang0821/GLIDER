@@ -1,0 +1,73 @@
+#include <Arduino.h>
+#include "utils/logger.hpp"
+#include "drivers/can_bus.hpp"
+#include "config/pin_map.hpp"
+
+// sends 2Hz heartbeat and print anything received
+
+static CanBus canbus;
+
+static uint8_t seq = 0;
+static uint32_t last_tx_ms = 0;
+
+void setup() {
+  // Force motor asleep in case something is wired wrong during bus testing
+  pinMode(PIN_MOTOR_SLP, OUTPUT);
+  digitalWrite(PIN_MOTOR_SLP, LOW);
+  pinMode(PIN_MOTOR_PWM, OUTPUT);
+  analogWrite(PIN_MOTOR_PWM, 0);
+
+  logger::begin(115200);
+  LOGI(F("CAN2 smoke test"));
+
+  // Typical CAN bitrates: 250k, 500k, 1M. Use whatever your Pi uses.
+  canbus.begin(500000,PIN_CAN_R,PIN_CAN_D);
+  LOGI(F("CAN started at 500k"));
+}
+
+void loop() {
+  // TX heartbeat at 2 Hz
+  const uint32_t now = millis();
+  if (now - last_tx_ms >= 5000) {
+    last_tx_ms = now;
+
+    CanFrame f;
+    f.id = 0x201; // temporary test ID
+    f.len = 2;
+    f.data[0] = 0xA5;
+    f.data[1] = seq++;
+    canbus.write(f);
+
+    Serial.print("TX id=0x");
+    Serial.print(f.id, HEX);
+    Serial.print(" data=");
+    Serial.print(f.data[0], HEX);
+    Serial.print(" ");
+    Serial.println(f.data[1], HEX);
+  }
+
+  // RX print
+  CanFrame r;
+  bool gotFrame = false;
+  static uint32_t last_debug_ms = 0;
+
+  while (canbus.read(r)) {
+    gotFrame = true;
+
+    Serial.print("RX id=0x");
+    Serial.print(r.id, HEX);
+    Serial.print(" len=");
+    Serial.print(r.len);
+    Serial.print(" data=");
+    for (uint8_t i = 0; i < r.len; i++) {
+      Serial.print(r.data[i], HEX);
+      if (i + 1 < r.len) Serial.print(" ");
+    }
+    Serial.println();
+  }
+
+  if (!gotFrame && millis() - last_debug_ms > 1000) {
+    last_debug_ms = millis();
+    Serial.println("No frame available");
+  }
+}

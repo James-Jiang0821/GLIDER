@@ -1,0 +1,21 @@
+#include <Arduino.h>
+#include "config/pin_map.hpp"
+#include "utils/logger.hpp"
+#include "drivers/proximity.hpp"
+
+static ProximitySensor prox(PIN_PROX, true); // active LOW
+
+void setup() {
+    logger::begin(115200);
+    LOGI(F("Proximity sensor test"));
+    prox.begin(true);  // use internal pullup
+}
+
+void loop() {
+    Serial.print("RAW=");
+    Serial.print(prox.raw() ? 1 : 0);
+    Serial.print("  TRIGGERED=");
+    Serial.println(prox.isTriggered() ? 1 : 0);
+
+    delay(500);
+}

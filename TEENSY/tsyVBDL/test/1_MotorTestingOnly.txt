@@ -1,0 +1,288 @@
+#include <Arduino.h>
+#include "config/pin_map.hpp"
+#include "config/constants.hpp"
+#include "utils/logger.hpp"
+#include "drivers/encoder.hpp"
+#include "drivers/motor_driver.hpp"
+#include "controllers/estimator.hpp"
+
+// --- Encoder ---
+static EncoderDriver enc({
+  .pin_a = PIN_ENC_A,
+  .pin_b = PIN_ENC_B,
+  .pin_z = PIN_ENC_Z,
+
+  .counts_per_rev = config::COUNTS_PER_SCREW_REV,
+  .lead_screw_pitch_mm = config::LEAD_SCREW_MM_PER_REV
+});
+
+// --- Motor ---
+static MotorDriver motor({
+  .pin_pwm = PIN_MOTOR_PWM,
+  .pin_dir = PIN_MOTOR_DIR,
+  .pin_slp = PIN_MOTOR_SLP,
+  .pin_flt = PIN_MOTOR_FLT,
+  .pin_cs  = PIN_MOTOR_CS,
+
+  .pwm_freq_hz = 25000.0f,
+  .pwm_max = 255,
+
+  .flt_active_low = true,
+
+  .cs_volts_per_amp = 0.04f,
+  .adc_ref_volts = 3.3f,
+  .adc_bits = 12
+});
+
+static Estimator estimator;
+
+enum class Phase {
+  RAMP_UP,
+  HOLD,
+  RAMP_DOWN
+};
+
+enum class ControlMode {
+  AUTO_PROFILE,
+  MANUAL
+};
+
+Phase phase = Phase::RAMP_UP;
+ControlMode mode = ControlMode::MANUAL;
+
+int pwm = 0;
+const int PWM_MAX = 240;
+const int PWM_STEP = 1;
+
+bool forward = true;
+
+uint32_t lastUpdate = 0;
+uint32_t phaseStart = 0;
+uint32_t lastPrint = 0;
+
+uint32_t lastEstimatorUpdate = 0;
+
+const uint32_t PRINT_INTERVAL_MOVING = 1000;  // ms
+const uint32_t PRINT_INTERVAL_IDLE   = 5000; // ms
+
+// Serial command buffer
+String cmdBuffer;
+
+// -----------------------------
+// Helpers
+// -----------------------------
+void printHelp() {
+  Serial.println("\n=== Commands ===");
+  Serial.println("h / help   -> show help");
+  Serial.println("m          -> manual mode");
+  Serial.println("a          -> auto trapezoid mode");
+  Serial.println("f          -> direction forward / extend");
+  Serial.println("b          -> direction backward / retract");
+  Serial.println("p<number>  -> set PWM, example: p120");
+  Serial.println("s          -> stop motor (PWM=0)");
+  Serial.println("z          -> zero encoder counts");
+  Serial.println("status     -> print current status");
+  Serial.println();
+}
+
+bool isMoving() {
+  return pwm > 0;
+}
+
+void applyDirection() {
+  motor.setDirection(
+    forward ? MotorDriver::Direction::EXTEND
+            : MotorDriver::Direction::RETRACT
+  );
+}
+
+void printStatus() {
+  Serial.print("mode=");
+  Serial.print(mode == ControlMode::AUTO_PROFILE ? "AUTO" : "MANUAL");
+
+  Serial.print("  pwm=");
+  Serial.print(pwm);
+
+  Serial.print("  dir=");
+  Serial.print(forward ? "F" : "B");
+
+  Serial.print("  phase=");
+  Serial.print(
+    phase == Phase::RAMP_UP ? "UP" :
+    phase == Phase::HOLD    ? "HOLD" : "DOWN"
+  );
+
+  Serial.print("  counts=");
+  Serial.print(enc.readCounts());
+
+  Serial.print("  mm=");
+  Serial.print(enc.readPositionMm(), 4);
+
+  Serial.println();
+}
+
+void handleCommand(String cmd) {
+  cmd.trim();
+  cmd.toLowerCase();
+
+  if (cmd.length() == 0) return;
+
+  if (cmd == "h" || cmd == "help") {
+    printHelp();
+  }
+  else if (cmd == "m") {
+    mode = ControlMode::MANUAL;
+    Serial.println("Switched to MANUAL mode");
+  }
+  else if (cmd == "a") {
+    mode = ControlMode::AUTO_PROFILE;
+    phase = Phase::RAMP_UP;
+    phaseStart = millis();
+    Serial.println("Switched to AUTO profile mode");
+  }
+  else if (cmd == "f") {
+    forward = true;
+    applyDirection();
+    Serial.println("Direction = FORWARD / EXTEND");
+  }
+  else if (cmd == "b") {
+    forward = false;
+    applyDirection();
+    Serial.println("Direction = BACKWARD / RETRACT");
+  }
+  else if (cmd.startsWith("p")) {
+    int newPwm = cmd.substring(1).toInt();
+    newPwm = constrain(newPwm, 0, 255);
+    pwm = newPwm;
+    motor.setPWM(pwm);
+
+    Serial.print("PWM set to ");
+    Serial.println(pwm);
+  }
+  else if (cmd == "s") {
+    pwm = 0;
+    motor.setPWM(0);
+    Serial.println("Motor stopped");
+  }
+  else if (cmd == "z") {
+    enc.writeCounts(0);
+    Serial.println("Encoder zeroed");
+  }
+  else if (cmd == "status") {
+    printStatus();
+  }
+  else {
+    Serial.print("Unknown command: ");
+    Serial.println(cmd);
+    printHelp();
+  }
+}
+
+void readSerialCommands() {
+  while (Serial.available()) {
+    char c = Serial.read();
+
+    if (c == '\n' || c == '\r') {
+      if (cmdBuffer.length() > 0) {
+        handleCommand(cmdBuffer);
+        cmdBuffer = "";
+      }
+    } else {
+      cmdBuffer += c;
+    }
+  }
+}
+
+// -----------------------------
+// Setup
+// -----------------------------
+void setup() {
+  logger::begin(115200);
+  Serial.begin(115200);
+
+  LOGI("Trapezoidal Motion Test");
+
+  enc.begin();
+  enc.writeCounts(0);
+
+  motor.begin();
+  motor.enable();
+
+  applyDirection();
+
+  phaseStart = millis();
+
+  delay(500);
+  printHelp();
+  printStatus();
+}
+
+// -----------------------------
+// Main loop
+// -----------------------------
+void loop() {
+  readSerialCommands();
+
+  // Safety
+  if (motor.faultActive()) {
+    motor.stop();
+    LOGE("MOTOR FAULT!");
+    Serial.println("MOTOR FAULT!");
+    while (1);
+  }
+
+  uint32_t now = millis();
+
+  // --- AUTO MOTION PROFILE ---
+  if (mode == ControlMode::AUTO_PROFILE && (now - lastUpdate >= 10)) {
+    lastUpdate = now;
+
+    switch (phase) {
+      case Phase::RAMP_UP:
+        pwm += PWM_STEP;
+        if (pwm >= PWM_MAX) {
+          pwm = PWM_MAX;
+          phase = Phase::HOLD;
+          phaseStart = now;
+        }
+        break;
+
+      case Phase::HOLD:
+        if (now - phaseStart > 1500) {
+          phase = Phase::RAMP_DOWN;
+        }
+        break;
+
+      case Phase::RAMP_DOWN:
+        pwm -= PWM_STEP;
+        if (pwm <= 0) {
+          pwm = 0;
+
+          forward = !forward;
+          applyDirection();
+
+          phase = Phase::RAMP_UP;
+        }
+        break;
+    }
+
+    motor.setPWM(pwm);
+  }
+
+  // --- PERIODIC STATUS PRINT ---
+  bool moving = isMoving();
+  uint32_t interval = moving ? PRINT_INTERVAL_MOVING
+                             : PRINT_INTERVAL_IDLE;
+
+  if (now - lastPrint >= interval) {
+    lastPrint = now;
+
+    if (moving) {
+      Serial.print("[MOV] ");
+    } else {
+      Serial.print("[IDLE] ");
+    }
+
+    printStatus();
+  }
+}

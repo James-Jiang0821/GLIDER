@@ -1,0 +1,95 @@
+#include <Arduino.h>
+#include "config/pin_map.hpp"
+#include "config/constants.hpp"
+#include "utils/logger.hpp"
+#include "drivers/encoder.hpp"
+#include "drivers/motor_driver.hpp"
+
+// --- Encoder ---
+static EncoderDriver enc({
+  .pin_a = PIN_ENC_A,
+  .pin_b = PIN_ENC_B,
+  .pin_z = PIN_ENC_Z,
+
+  .counts_per_rev = config::COUNTS_PER_SCREW_REV,
+  .lead_screw_pitch_mm = config::LEAD_SCREW_MM_PER_REV
+});
+
+// --- Motor ---
+static MotorDriver motor({
+  .pin_pwm = PIN_MOTOR_PWM,
+  .pin_dir = PIN_MOTOR_DIR,
+  .pin_slp = PIN_MOTOR_SLP,
+  .pin_flt = PIN_MOTOR_FLT,
+  .pin_cs  = PIN_MOTOR_CS,
+
+  .pwm_freq_hz = 25000.0f,
+  .pwm_max = 255,
+
+  .flt_active_low = true,
+
+  .cs_volts_per_amp = 0.04f,
+  .adc_ref_volts = 3.3f,
+  .adc_bits = 12
+});
+
+void setup() {
+  logger::begin(115200);
+  LOGI("Encoder test starting");
+
+  enc.begin();
+  enc.writeCounts(0);
+
+  motor.begin();
+  motor.enable();
+  motor.setDirection(MotorDriver::Direction::EXTEND);
+
+  // 🔴 Set once (important)
+  motor.setPWM(40);
+
+  LOGI("Motor running at PWM=40");
+}
+
+void loop() {
+  // 🔴 MUST run fast
+  enc.update();
+
+  // Safety
+  if (motor.faultActive()) {
+    motor.stop();
+    LOGE("MOTOR FAULT!");
+    while (1);
+  }
+
+  // Print at ~10Hz
+  static uint32_t lastPrint = 0;
+  if (millis() - lastPrint > 100) {
+    lastPrint = millis();
+
+    int32_t counts = enc.readCounts();
+
+    // Option 1: using driver conversion
+    float mm = enc.readPositionMm();
+
+    // Option 2: using your constant directly
+    float mm_alt = counts * config::MM_PER_COUNT;
+
+    int a = digitalReadFast(PIN_ENC_A);
+    int b = digitalReadFast(PIN_ENC_B);
+
+    Serial.print("counts=");
+    Serial.print(counts);
+
+    Serial.print("  mm=");
+    Serial.print(mm, 4);
+
+    Serial.print("  mm_alt=");
+    Serial.print(mm_alt, 4);
+
+    Serial.print("  A=");
+    Serial.print(a);
+
+    Serial.print("  B=");
+    Serial.println(b);
+  }
+}

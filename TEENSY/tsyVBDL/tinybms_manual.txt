@@ -1,0 +1,1295 @@
+                     Communication
+                     Protocols
+                     Tiny BMS
+        Revision D, 2025-07-04
+                                         Tiny BMS Communication Protocols
+         Contents
+         Chapter 1: Tiny BMS UART communication protocol.....................................................................................4
+           1. Introduction........................................................................................................................................... 4
+            1.1. UART communication commands list............................................................................................4
+              1.1.1. Tiny BMS acknowledgement.................................................................................................4
+              1.1.2. Read Tiny BMS registers block.............................................................................................4
+              1.1.3. Read Tiny BMS individual registers......................................................................................5
+              1.1.4. Write Tiny BMS registers block.............................................................................................5
+              1.1.5. Write Tiny BMS individual registers.......................................................................................5
+              1.1.6. Read Tiny BMS registers block (MODBUS compatible)........................................................6
+              1.1.7. Write Tiny BMS registers block (MODBUS compatible)........................................................6
+              1.1.8. Reset Tiny BMS, clear Events and Statistics........................................................................7
+              1.1.9. Read Tiny BMS newest Events.............................................................................................7
+              1.1.10.  Read Tiny BMS all Events..................................................................................................7
+              1.1.11.  Read battery pack voltage (Reg:36)...................................................................................8
+              1.1.12.  Read battery pack current (Reg:38)...................................................................................8
+              1.1.13.  Read battery pack max. cell voltage (Reg:41)....................................................................8
+              1.1.14.  Read battery pack min. cell voltage (Reg:40).....................................................................8
+              1.1.15.  Read Tiny BMS online status (Reg:50)..............................................................................8
+              1.1.16.  Read Tiny BMS lifetime counter (Reg:32)..........................................................................9
+              1.1.17.  Read Tiny BMS estimated SOC value (Reg:46)................................................................9
+              1.1.18.  Read Tiny BMS device temperatures (Reg:48, Reg:42, Reg:43).......................................9
+              1.1.19.  Read battery pack cells voltages......................................................................................10
+              1.1.20.  Read Tiny BMS settings values (min, max, default, current)............................................10
+              1.1.21.  Read Tiny BMS version....................................................................................................10
+              1.1.22.  Read Tiny BMS extended version....................................................................................10
+              1.1.23.  Read Tiny BMS calculated speed, left distance and estimated time values.....................11
+            1.2. CRC checksum calculation..........................................................................................................11
+            1.3. UART communication examples.................................................................................................12
+              1.3.1. MODBUS write registers example.......................................................................................12
+              1.3.2. MODBUS read registers example.......................................................................................13
+              1.3.3. Tiny BMS read temperatures example................................................................................13
+         Chapter 2: Tiny BMS CAN bus communication protocol..............................................................................14
+           2. Introduction......................................................................................................................................... 14
+            2.1. CAN bus communication commands list.....................................................................................14
+              2.1.1. Reset Tiny BMS, clear Events and Statistics......................................................................14
+              2.1.2. Read Tiny BMS registers block...........................................................................................14
+              2.1.3. Write Tiny BMS registers block...........................................................................................15
+              2.1.4. Read Tiny BMS newest Events...........................................................................................15
+              2.1.5. Read Tiny BMS all Events...................................................................................................16
+              2.1.6. Read battery pack voltage (Reg:36)....................................................................................17
+              2.1.7. Read battery pack current (Reg:38)....................................................................................17
+              2.1.8. Read battery pack max. cell voltage (Reg:41).....................................................................17
+              2.1.9. Read battery pack min. cell voltage (Reg:40)......................................................................18
+              2.1.10.  Read Tiny BMS online status (Reg:50)............................................................................18
+              2.1.11.  Read Tiny BMS lifetime counter (Reg:32)........................................................................18
+              2.1.12.  Read Tiny BMS estimated SOC value (Reg:46)..............................................................19
+              2.1.13.  Read Tiny BMS device temperatures (Reg:48, Reg:42, Reg:43).....................................19
+              2.1.14.  Read battery pack cells voltages......................................................................................20
+              2.1.15.  Read Tiny BMS settings values (min, max, default, current)............................................20
+              2.1.16.  Read Tiny BMS version....................................................................................................21
+              2.1.17.  Read Tiny BMS calculated speed, left distance and estimated time values.....................21
+              2.1.18.  Read CAN node ID..........................................................................................................22
+              2.1.19.  Write CAN node ID...........................................................................................................22
+         Chapter 3: Tiny BMS registers map.............................................................................................................23
+           3. Introduction......................................................................................................................................... 23
+          www.enepaq.com     Revision D, 2025-07-04    Page 2
+                                  Tiny BMS Communication Protocols
+       3.1. Tiny BMS Live data.....................................................................................................................23
+       3.2. Tiny BMS Statistics data.............................................................................................................23
+       3.3. Tiny BMS Events data.................................................................................................................24
+       3.4. Tiny BMS settings.......................................................................................................................24
+       3.5. Tiny BMS version data................................................................................................................25
+    Chapter 4: Tiny BMS Events messages list.................................................................................................26
+      4. Introduction......................................................................................................................................... 26
+       4.1. Tiny BMS Fault messages list.....................................................................................................26
+       4.2. Tiny BMS Warning messages list................................................................................................26
+       4.3. Tiny BMS Information messages list...........................................................................................26
+     www.enepaq.com    Revision D, 2025-07-04    Page 3
+                                                                                                       Tiny BMS Communication Protocols
+                       Chapter 1: Tiny BMS UART communication protocol
+                       1. Introduction
+                       Tiny BMS device includes a single multi-purpose UART interface. In combination with various converters, 
+                       the interface is compatible with USB, bluetooth and CAN interfaces. Various proprietary commands are 
+                       available for fast communication, also MODBUS commands 03 and 16 are supported for rapid integration 
+                       to existing industrial systems. An internal Tiny BMS device register map is given in Chapter 3. The register 
+                       map values can be read and modified using MODBUS and proprietary commands. This chapter in detail 
+                       covers all available commands implemented to communicate with Tiny BMS device. Every command 
+                       request and response contains 16 bit CRC checksum. How to calculate CRC value refer to Chapter 1.2.
+                        Note: UART configuration: baudrate 115200 bit/s, 8 data bits, 1 stop bit, no parity, no flow control. UART 
+                        configuration is not allowed to be changed by the user.
+                       1.1. UART communication commands list
+                       1.1.1. Tiny BMS acknowledgement
+                       Response from BMS [NACK]
+                        Byte 1   Byte 2   Byte 3             Byte 4               Byte 5      Byte 6
+                         0xAA     0x00     CMD               ERROR              CRC:LSB     CRC:MSB
+                                                      0x00 – CMD ERROR
+                                                       0x01 – CRC ERROR
+                       Response from BMS [ACK]
+                        Byte 1   Byte 2   Byte 3     Byte 4      Byte 5
+                         0xAA     0x01     CMD     CRC:LSB CRC:MSB
+                       CMD – Command code
+                       ERROR – Error code
+                       1.1.2. Read Tiny BMS registers block
+                       Request to BMS
+                         Byte1   Byte 2   Byte 3      Byte 4       Byte 5       Byte 6       Byte 7
+                         0xAA     0x07      RL     ADDR:LSB      ADDR:MSB      CRC:LSB     CRC:MSB
+                                                           [UINT_16]
+                       Response from BMS [OK]
+                         Byte1   Byte 2   Byte 3      Byte 4       Byte 5      ...   Byte n*2+2     Byte n*2+3    Byte n*2+4    Byte n*2+5
+                         0xAA     0x07      PL     DATA1:LSB DATA1:MSB         ...   DATAn:LSB     DATAn:MSB       CRC:LSB      CRC:MSB
+                                                           [UINT_16]                         [UINT_16]
+                       RL – Registers to read
+                       ADDR – First registers block address
+                       DATA – Registers block values
+                       PL – Payload length byte
+                         Bit 7      Bit 6       Bit 5    Bit 4     Bit 3     Bit 2    Bit 1    Bit 0
+                           0      Reserved                Payload size in bytes (last packet)
+                           1      Reserved                       Current packet ID
+                       Response from BMS [ERROR]
+                         Byte 1   Byte 2    Byte 3    Byte 4     Byte 5       Byte 6
+                         0xAA      0x00      0x07    ERROR CRC:LSB          CRC:MSB
+                        www.enepaq.com                                  Revision D, 2025-07-04                                              Page 4
+                                                                                   Tiny BMS Communication Protocols
+         1.1.3. Read Tiny BMS individual registers
+         Request to BMS
+           Byte1  Byte 2   Byte 3     Byte 4        Byte 5      ...  Byte n*2+2    Byte n*2+3   Byte n*2+4  Byte n*2+5
+           0xAA    0x09      PL     ADDR1:LSB ADDR1:MSB         ...  ADDRn:LSB    ADDRn:MSB      CRC:LSB    CRC:MSB
+                                            [UINT_16]                        [UINT_16]
+         PL – Payload length in bytes
+         Response from BMS [OK]
+           Byte1   Byte 2  Byte 3     Byte 4        Byte 5        Byte 6      Byte 7      ...    Byte n*4    Byte n*4+1
+           0xAA    0x09      PL     ADDR1:LSB    ADDR1:MSB DATA1:LSB DATA1:MSB            ...  ADDRn:LSB     ADDRn:MSB
+                                            [UINT_16]                  [UINT_16]                       [UINT_16]
+           Byte n*4+2   Byte n*4+3   Byte n*4+4  Byte n*4+5
+           DATAn:LSB   DATAn:MSB     CRC:LSB     CRC:MSB
+                  [UINT_16]
+         Request to BMS
+         ADDR – Individual registers addresses
+         DATA – Registers values
+         PL – Payload length byte
+           Bit 7     Bit 6      Bit 5   Bit 4     Bit 3    Bit 2    Bit 1   Bit 0
+             0     Reserved              Payload size in bytes (last packet)
+             1     Reserved                     Current packet ID
+         Response from BMS [ERROR]
+            Byte 1     Byte 2    Byte 3     Byte 4      Byte 5       Byte 6
+            0xAA       0x00       0x09      ERROR      CRC:LSB     CRC:MSB
+         1.1.4. Write Tiny BMS registers block
+         Request to BMS
+           Byte1    Byte 2   Byte 3      Byte 4       Byte 5        Byte 6       Byte 7      ... Byte n*2+4   Byte n*2+5
+           0xAA     0x0B       PL      ADDR:LSB     ADDR:MSB     DATA1:LSB     DATA1:MSB     ... DATAn:LSB    DATAn:MSB
+                                              [UINT_16]                  [UINT_16]                      [UINT_16]
+           Byte n*2+6  Byte n*2+7
+           CRC:LSB     CRC:MSB
+         ADDR – First registers block address (valid addresses to write 0x012C to 0x018F)
+         DATA – Registers block values to write
+         PL – Payload length byte
+           Bit 7     Bit 6      Bit 5   Bit 4     Bit 3    Bit 2    Bit 1   Bit 0
+             0     Reserved              Payload size in bytes (last packet)
+             1     Reserved                     Current packet ID
+         Response from BMS [ACK]
+           Byte 1  Byte 2    Byte 3    Byte 4      Byte 5
+           0xAA     0x01     0x0B     CRC:LSB    CRC:MSB
+         Response from BMS [ERROR]
+           Byte 1  Byte 2    Byte 3    Byte 4      Byte 5      Byte 6
+           0xAA     0x00     0x0B     ERROR      CRC:LSB     CRC:MSB
+         1.1.5. Write Tiny BMS individual registers
+         Request to BMS
+           Byte1   Byte 2    Byte 3      Byte 4        Byte 5        Byte 6       Byte 7     ...   Byte n*4     Byte n*4+1
+           0xAA     0x0D      PL      ADDR1:LSB     ADDR1:MSB     DATA1:LSB    DATA1:MSB     ... ADDRn:LSB ADDRn:MSB
+                                              [UINT_16]                   [UINT_16]                      [UINT_16]
+          www.enepaq.com                               Revision D, 2025-07-04                                        Page 5
+                                                                                                   Tiny BMS Communication Protocols
+                        Byte n*4+2   Byte n*4+3    Byte n*4+4  Byte n*4+5
+                        DATAn:LSB    DATAn:MSB     CRC:LSB      CRC:MSB
+                               [UINT_16]
+                      ADDR – Individual registers addresses (valid addresses to write 0x012C to 0x018F)
+                      DATA – Individual registers values to write
+                      PL – Payload length byte
+                        Bit 7      Bit 6      Bit 5    Bit 4    Bit 3     Bit 2    Bit 1    Bit 0
+                          0      Reserved              Payload size in bytes (last packet)
+                          1      Reserved                      Current packet ID
+                      Response from BMS [ACK]
+                       Byte 1   Byte 2     Byte 3    Byte 4      Byte 5
+                        0xAA     0x01      0x0D     CRC:LSB CRC:MSB
+                      Response from BMS [ERROR]
+                       Byte 1   Byte 2     Byte 3    Byte 4      Byte 5      Byte 6
+                        0xAA     0x00      0x0D      ERROR     CRC:LSB     CRC:MSB
+                      1.1.6. Read Tiny BMS registers block (MODBUS compatible)
+                      Request to BMS
+                        Byte1   Byte 2       Byte 3         Byte 4      Byte 5   Byte 6    Byte 7      Byte 8
+                        0xAA     0x03     ADDR1:MSB      ADDR1:LSB      0x00       RL     CRC:LSB CRC:MSB
+                                                   [UINT_16]
+                      ADDR – First registers block address
+                      RL – Registers to read. Max. 127 registers (0x7F)
+                      Response from BMS [OK]
+                        Byte1    Byte 2    Byte 3     Byte 4        Byte 5      ...   Byte n*2+2    Byte n*2+3   Byte n*2+4  Byte n*2+5
+                        0xAA      0x03       PL     DATA1:MSB     DATA1:LSB     ...  DATAn:MSB     DATAn:LSB     CRC:LSB     CRC:MSB
+                                                            [UINT_16]                        [UINT_16]
+                      PL – Payload length in bytes
+                      Response from BMS [ERROR]
+                        Byte 1   Byte 2    Byte 3    Byte 4     Byte 5      Byte 6
+                        0xAA      0x00      0x03    ERROR CRC:LSB         CRC:MSB
+                      1.1.7. Write Tiny BMS registers block (MODBUS compatible)
+                      Request to BMS
+                        Byte 1   Byte 2      Byte 3        Byte 4     Byte 5     Byte 6    Byte 7         Byte8           Byte 9      ...
+                        0xAA      0x10     ADDR:MSB      ADDR:LSB      0x00       RL         PL        DATA1:MSB        DATA1:LSB     ...
+                                                  [UINT_16]                                                     [UINT_16]
+                        Byte n*2+6   Byte n*2+7    Byte n*2+8  Byte n*2+9
+                       DATAn:MSB     DATAn:LSB     CRC:LSB      CRC:MSB
+                               [UINT_16]
+                      Response from BMS [OK]
+                        Byte1    Byte 2       Byte 3         Byte 4       Byte 5     Byte 6       Byte 7        Byte 8
+                        0xAA      0x10     ADDR:MSB        ADDR:LSB        0x00        RL       CRC:LSB       CRC:MSB
+                                                    [UINT_16]
+                      ADDR – First registers block address
+                      RL – Registers to write. Max. 100 registers (0x64)
+                      PL – Payload length in bytes
+                      DATA – Registers block values to write
+                      Response from BMS [ERROR]
+                        Byte 1   Byte 2     Byte 3     Byte 4      Byte 5       Byte 6
+                        0xAA      0x00      0x10      ERROR      CRC:LSB      CRC:MSB
+                        www.enepaq.com                                Revision D, 2025-07-04                                           Page 6
+                                                                                         Tiny BMS Communication Protocols
+          1.1.8. Reset Tiny BMS, clear Events and Statistics
+          Request to BMS
+           Byte 1    Byte 2             Byte 3              Byte 4       Byte 5
+            0xAA      0x02             OPTION              CRC:LSB     CRC:MSB
+                                  0x01 – Clear Events
+                                 0x02 – Clear Statistics
+                                   0x05 – Reset BMS
+          Response from BMS [ACK]
+           Byte 1    Byte 2     Byte 3     Byte 4      Byte 5
+            0xAA      0x01      0x02      CRC:LSB     CRC:MSB
+          Response from BMS [ERROR]
+           Byte 1    Byte 2     Byte 3     Byte 4       Byte 5      Byte 6
+            0xAA      0x00      0x02      ERROR       CRC:LSB     CRC:MSB
+          1.1.9. Read Tiny BMS newest Events
+          Request to BMS
+           Byte 1    Byte 2     Byte 3      Byte 4
+            0xAA      0x11     CRC:LSB CRC:MSB
+          Response from BMS [OK]
+           Byte 1    Byte 2     Byte 3      Byte 4     Byte 5   Byte 6     Byte 7       Byte 8     Byte 9     Byte 10    Byte 11    ...
+            0xAA      0x11        PL      BTSP:LSB     BTSP      BTSP BTSP:MSB TSP1:LSB             TSP1    TSP1:MSB EVENT1         ...
+                                                          [UINT32]                                [UINT24]              [UINT_8]
+           Byte n*4+4 Byte n*4+5 Byte n*4+6 Byte n*4+7     Byte n*4+8   Byte n*4+9
+           TSPn:LSB      TSPn     TSPn:MSB     EVENTn      CRC:LSB      CRC:MSB
+                      [UINT_24]                [UINT_8]
+          PL – Payload length in bytes
+          PTSP – BMS timestamp in seconds
+          TSP – Event timestamp in seconds
+          EVENT – BMS Event ID
+          Response from BMS [ERROR]
+            Byte 1    Byte 2    Byte 3      Byte 4       Byte 5        Byte 6
+            0xAA      0x00       0x11      ERROR       CRC:LSB       CRC:MSB
+          1.1.10. Read Tiny BMS all Events
+          Request to BMS
+            Byte 1    Byte 2    Byte 3      Byte 4
+            0xAA      0x12     CRC:LSB CRC:MSB
+          Response from BMS [OK]
+            Byte 1    Byte 2    Byte 3      Byte 4     Byte 5   Byte 6     Byte 7       Byte 8     Byte 9     Byte 10   Byte 11    ...
+            0xAA      0x12        PL      BTSP:LSB     BTSP      BTSP BTSP:MSB TSP1:LSB             TSP1    TSP1:MSB EVENT1        ...
+                                                          [UINT_32]                              [UINT_24]              [UINT_8]
+           Byte n*4+4 Byte n*4+5 Byte n*4+6 Byte n*4+7     Byte n*4+8   Byte n*4+9
+           TSPn:LSB      TSPn     TSPn:MSB     EVENTn      CRC:LSB      CRC:MSB
+                      [UINT_24]                [UINT_8]
+          PL – Payload length in bytes
+          PTSP – BMS timestamp in seconds
+          TSP – Event timestamp in seconds
+          EVENT – BMS Event ID
+          Response from BMS [ERROR]
+            Byte 1    Byte 2    Byte 3      Byte 4      Byte 5      Byte 6
+            0xAA      0x00       0x12      ERROR      CRC:LSB CRC:MSB
+           www.enepaq.com                                  Revision D, 2025-07-04                                              Page 7
+                                                                                                       Tiny BMS Communication Protocols
+                       1.1.11. Read battery pack voltage (Reg:36)
+                       Request to BMS
+                         Byte 1    Byte 2     Byte 3      Byte 4
+                         0xAA      0x14     CRC:LSB     CRC:MSB
+                       Response from BMS [OK]
+                         Byte 1    Byte 2       Byte 3       Byte 4        Byte 5        Byte 6      Byte 7       Byte 8
+                         0xAA       0x14      DATA:LSB        DATA         DATA       DATA:MSB      CRC:LSB     CRC:MSB
+                                                                   [FLOAT]
+                       Response from BMS [ERROR]
+                         Byte 1    Byte 2      Byte 3      Byte 4       Byte 5       Byte 6
+                         0xAA       0x00        0x14      ERROR       CRC:LSB      CRC:MSB
+                       1.1.12. Read battery pack current (Reg:38)
+                       Request to BMS
+                         Byte 1    Byte 2      Byte 3       Byte 4
+                         0xAA       0x15     CRC:LSB      CRC:MSB
+                       Response from BMS [OK]
+                         Byte 1    Byte 2       Byte 3      Byte 4      Byte 5       Byte 6        Byte 7        Byte 8
+                         0xAA       0x15      DATA:LSB       DATA       DATA       DATA:MSB       CRC:LSB      CRC:MSB
+                                                                 [FLOAT]
+                       Response from BMS [ERROR]
+                         Byte 1    Byte 2      Byte 3       Byte 4      Byte 5       Byte 6
+                         0xAA       0x00        0x15       ERROR      CRC:LSB      CRC:MSB
+                       1.1.13. Read battery pack max. cell voltage (Reg:41)
+                       Request to BMS
+                         Byte 1    Byte 2      Byte 3       Byte 4
+                         0xAA       0x16     CRC:LSB      CRC:MSB
+                       Response from BMS [OK]
+                         Byte 1    Byte 2       Byte 3         Byte 4         Byte 5        Byte 6
+                         0xAA       0x16      DATA:LSB       DATA:MSB       CRC:LSB       CRC:MSB
+                                                      [UINT_16]
+                       Response from BMS [ERROR]
+                         Byte 1    Byte 2     Byte 3      Byte 4       Byte 5       Byte 6
+                         0xAA       0x00       0x16      ERROR       CRC:LSB      CRC:MSB
+                       1.1.14. Read battery pack min. cell voltage (Reg:40)
+                       Request to BMS
+                         Byte 1    Byte 2     Byte 3      Byte 4
+                         0xAA       0x17     CRC:LSB CRC:MSB
+                       Response from BMS [OK]
+                         Byte 1    Byte 2       Byte 3         Byte 4         Byte 5         Byte 6
+                         0xAA       0x17      DATA:LSB       DATA:MSB        CRC:LSB       CRC:MSB
+                                                      [UINT_16]
+                       Response from BMS [ERROR]
+                         Byte 1    Byte 2     Byte 3      Byte 4      Byte 5        Byte 6
+                         0xAA       0x00       0x17      ERROR       CRC:LSB      CRC:MSB
+                       1.1.15. Read Tiny BMS online status (Reg:50)
+                       Request to BMS
+                         Byte 1    Byte 2     Byte 3      Byte 4
+                         0xAA       0x18     CRC:LSB CRC:MSB
+                        www.enepaq.com                                  Revision D, 2025-07-04                                              Page 8
+                                                                                         Tiny BMS Communication Protocols
+          Response from BMS [OK]
+            Byte 1    Byte 2        Byte 3          Byte 4        Byte 5      Byte 6
+            0xAA       0x18       DATA:LSB       DATA:MSB       CRC:LSB      CRC:MSB
+                                    0x91 – Charging [INFO]
+                                 0x92 – Fully Charged [INFO]
+                                  0x93 – Discharging [INFO]
+                                  0x96 – Regeneration [INFO]
+                                      0x97 – Idle [INFO]
+                                    0x9B – Fault [ERROR]
+          Response from BMS [ERROR]
+            Byte 1    Byte 2       Byte 3       Byte 4       Byte 5       Byte 6
+            0xAA       0x00         0x18       ERROR       CRC:LSB      CRC:MSB
+          1.1.16. Read Tiny BMS lifetime counter (Reg:32)
+          Request to BMS
+            Byte 1    Byte 2      Byte 3       Byte 4
+            0xAA       0x19     CRC:LSB      CRC:MSB
+          Response from BMS [OK]
+            Byte 1    Byte 2      Byte 3       Byte 4       Byte 5        Byte 6       Byte 7       Byte 8
+            0xAA       0x19     DATA:LSB       DATA         DATA       DATA:MSB       CRC:LSB     CRC:MSB
+                                                    [UINT_32]
+          Response from BMS [ERROR]
+            Byte 1    Byte 2      Byte 3       Byte 4       Byte 5        Byte 6
+            0xAA       0x00       0x19        ERROR       CRC:LSB       CRC:MSB
+          1.1.17. Read Tiny BMS estimated SOC value (Reg:46)
+          Request to BMS
+            Byte 1     Byte 2      Byte 3       Byte 4
+             0xAA       0x1A      CRC:LSB     CRC:MSB
+          Response from BMS [OK]
+            Byte 1     Byte 2      Byte 3       Byte 4      Byte 5        Byte 6        Byte 7       Byte 8
+             0xAA       0x1A     DATA:LSB       DATA        DATA       DATA:MSB       CRC:LSB      CRC:MSB
+                                                     [UINT_32]
+          Response from BMS [ERROR]
+            Byte 1     Byte 2      Byte 3       Byte 4      Byte 5        Byte 6
+             0xAA       0x00        0x1A       ERROR      CRC:LSB       CRC:MSB
+          1.1.18. Read Tiny BMS device temperatures (Reg:48, Reg:42, Reg:43)
+          Request to BMS
+           Byte 1   Byte 2    Byte 3       Byte 4
+            0xAA    0x1B     CRC:LSB     CRC:MSB
+          Response from BMS [OK]
+           Byte 1   Byte 2  Byte 3     Byte 4      Byte 5       Byte 6       Byte 7      Byte 8       Byte 9      Byte 10    Byte 11
+            0xAA    0x1B      PL    DATA1:LSB DATA1:MSB DATA2:LSB DATA2:MSB DATA3:LSB DATA3:MSB CRC:LSB CRC:MSB
+                                            [INT_16]                 [INT_16]                  [INT_16]
+          PL – Payload length in bytes
+          DATA1 – Tiny BMS internal temperature
+          DATA2 – External temperature sensor #1 temperature value (value of -32768 if not connected)
+          DATA3 – External temperature sensor #2 temperature value (value of -32768 if not connected)
+          Response from BMS [ERROR]
+           Byte 1   Byte 2    Byte 3    Byte 4      Byte 5        Byte 6
+            0xAA    0x00      0x1B      ERROR      CRC:LSB      CRC:MSB
+           www.enepaq.com                                  Revision D, 2025-07-04                                              Page 9
+                                                                                                       Tiny BMS Communication Protocols
+                       1.1.19. Read battery pack cells voltages
+                       Request to BMS
+                         Byte 1   Byte 2     Byte 3       Byte 4
+                         0xAA      0x1C    CRC:LSB      CRC:MSB
+                       Response from BMS [OK]
+                        Byte 1   Byte 2   Byte 3    Byte 4      Byte 5      ...    Byte n*2+2   Byte n*2+3    Byte n*2+4    Byte n*2+5
+                         0xAA    0x1C      PL    DATA1:LSB DATA1:MSB        ...   DATAn:LSB DATAn:MSB         CRC:LSB       CRC:MSB
+                                                        [UINT_16]                         [UINT_16]
+                       PL – Payload length in bytes
+                       Response from BMS [ERROR]
+                         Byte 1   Byte 2     Byte 3      Byte 4       Byte 5        Byte 6
+                         0xAA      0x00      0x1C       ERROR       CRC:LSB       CRC:MSB
+                       1.1.20. Read Tiny BMS settings values (min, max, default, current)
+                       Request to BMS
+                        Byte 1 Byte 2           Byte 3           Byte 4   Byte 5       Byte 6        Byte 7
+                         0xAA    0x1D          OPTION             0x00      RL       CRC:LSB       CRC:MSB
+                                          0x01 – Min. settings
+                                          0x02 – Max. settings
+                                         0x03 – Default settings
+                                        0x04 – Current settings
+                       RL – Registers to read. Max. 100 (0x64) registers
+                       Response from BMS [OK]
+                        Byte 1   Byte 2   Byte 3    Byte 4      Byte 5      ...    Byte n*2+2   Byte n*2+3    Byte n*2+4    Byte n*2+5
+                         0xAA    0x1D      PL    DATA1:LSB DATA1:MSB        ...   DATAn:LSB DATAn:MSB         CRC:LSB       CRC:MSB
+                                                        [UINT_16]                         [UINT_16]
+                       PL – Payload length in bytes
+                       Response from BMS [ERROR]
+                        Byte 1   Byte 2   Byte 3    Byte 4      Byte 5        Byte 6
+                         0xAA     0x00     0x1D     ERROR      CRC:LSB      CRC:MSB
+                       1.1.21. Read Tiny BMS version
+                       Request to BMS
+                        Byte 1   Byte 2      Byte 3        Byte 4
+                         0xAA    0x1E      CRC:LSB       CRC:MSB
+                       Response from BMS [OK]
+                        Byte 1   Byte 2   Byte 3    Byte 4      Byte 5     Byte 6      Byte 7        Byte 8      Byte 9     Byte 10
+                         0xAA     0x1E     PL       DATA1       DATA2      DATA3     DATA4:LSB     DATA4:MSB CRC:LSB CRC:MSB
+                                                   [UINT_8]    [UINT_8]   [UINT_8]          [UINT_16]
+                       PL – Payload length in bytes
+                       DATA1 – Hardware version
+                       DATA2 – Hardware changes version
+                       DATA3 – Firmware public version
+                       DATA4 – Firmware internal version
+                       Response from BMS [ERROR]
+                        Byte 1   Byte 2    Byte 3       Byte 4       Byte 5        Byte 6
+                         0xAA     0x00      0x1E       ERROR       CRC:LSB       CRC:MSB
+                       1.1.22. Read Tiny BMS extended version
+                       Request to BMS
+                        Byte 1   Byte 2    Byte 3       Byte 4
+                         0xAA     0x1F    CRC:LSB     CRC:MSB
+                        www.enepaq.com                                  Revision D, 2025-07-04                                             Page 10
+                                                                                         Tiny BMS Communication Protocols
+          Response from BMS [OK]
+           Byte 1    Byte 2   Byte 3   Byte 4     Byte 5    Byte 6      Byte 7       Byte 8      Byte 9   Byte 10    Byte 11   Byte 12
+            0xAA      0x1F      PL     DATA1      DATA2     DATA3     DATA4:LSB DATA4:MSB DATA5            DATA6 CRC:LSBCRC:MSB
+                                      [UINT_8] [UINT_8] [UINT_8]             [UINT_16]          [UINT_8] [UINT_8]
+          PL – Payload length in bytes
+          DATA1 – Hardware version
+          DATA2 – Hardware changes version
+          DATA3 – Firmware public version
+          DATA4 – Firmware internal version
+          DATA5 – Bootloader version
+          DATA6 – Register map version
+          Response from BMS [ERROR]
+           Byte 1    Byte 2   Byte 3   Byte 4      Byte 5      Byte 6
+            0xAA      0x00     0x1F   ERROR CRC:LSB CRC:MSB
+          1.1.23. Read Tiny BMS calculated speed, left distance and estimated time values
+          Request to BMS
+           Byte 1    Byte 2      Byte 3       Byte 4
+            0xAA      0x20     CRC:LSB      CRC:MSB
+          Response from BMS [OK]
+           Byte 1      Byte 2         Byte 3        Byte 4    Byte 5      Byte 6       Byte 7      Byte 8      Byte 9       Byte 10
+            0xAA       0x20         DATA1:LSB       DATA1     DATA1 DATA1:MSB DATA2:LSB            DATA2       DATA2      DATA2:MSB
+                                                      [FLOAT]                                            [UINT_32]
+            Byte 11     Byte 12    Byte 13      Byte 14       Byte 15     Byte 16
+          DATA3:LSB     DATA3       DATA3     DATA3:MSB      CRC:LSB     CRC:MSB
+                              [UINT_32]
+          DATA1 – Speed (km/h)
+          DATA2 – Left distance to empty battery (km)
+          DATA3 – Estimated time left to empty battery (seconds)
+          Response from BMS [ERROR]
+           Byte 1    Byte 2     Byte 3      Byte 4       Byte 5       Byte 6
+            0xAA      0x00       0x20      ERROR       CRC:LSB      CRC:MSB
+          1.2. CRC checksum calculation
+          CRC stands for Cyclic Redundancy Check. It is two bytes added to the end of every command message for 
+          error detection. Every byte in the message is used to calculate the CRC value. The receiving device also 
+          must calculate the CRC and compare it to the CRC from sending device. If even one bit in the message is 
+          received incorrectly, the CRC values will be different and will result in an error. In the Tiny BMS UART 
+          communication protocol the CRC checksum is 16 bit value, calculated based on standard MODBUS CRC 
+                          16  15   2
+          polynomial  x +x +x +1  (0x8005  in  HEX  format). Below is the function example in  C  programming 
+          language that can be used as a reference to calculate the 16 bit CRC value:
+          const static uint16_t crcTable[256]={
+              0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
+              0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440,
+              0xCC01, 0x0CC0, 0x0D80, 0xCD41, 0x0F00, 0xCFC1, 0xCE81, 0x0E40,
+              0x0A00, 0xCAC1, 0xCB81, 0x0B40, 0xC901, 0x09C0, 0x0880, 0xC841,
+              0xD801, 0x18C0, 0x1980, 0xD941, 0x1B00, 0xDBC1, 0xDA81, 0x1A40,
+              0x1E00, 0xDEC1, 0xDF81, 0x1F40, 0xDD01, 0x1DC0, 0x1C80, 0xDC41,
+              0x1400, 0xD4C1, 0xD581, 0x1540, 0xD701, 0x17C0, 0x1680, 0xD641,
+              0xD201, 0x12C0, 0x1380, 0xD341, 0x1100, 0xD1C1, 0xD081, 0x1040,
+              0xF001, 0x30C0, 0x3180, 0xF141, 0x3300, 0xF3C1, 0xF281, 0x3240,
+              0x3600, 0xF6C1, 0xF781, 0x3740, 0xF501, 0x35C0, 0x3480, 0xF441,
+           www.enepaq.com                                  Revision D, 2025-07-04                                             Page 11
+                                                                       Tiny BMS Communication Protocols
+                   0x3C00, 0xFCC1, 0xFD81, 0x3D40, 0xFF01, 0x3FC0, 0x3E80, 0xFE41,
+                   0xFA01, 0x3AC0, 0x3B80, 0xFB41, 0x3900, 0xF9C1, 0xF881, 0x3840,
+                   0x2800, 0xE8C1, 0xE981, 0x2940, 0xEB01, 0x2BC0, 0x2A80, 0xEA41,
+                   0xEE01, 0x2EC0, 0x2F80, 0xEF41, 0x2D00, 0xEDC1, 0xEC81, 0x2C40,
+                   0xE401, 0x24C0, 0x2580, 0xE541, 0x2700, 0xE7C1, 0xE681, 0x2640,
+                   0x2200, 0xE2C1, 0xE381, 0x2340, 0xE101, 0x21C0, 0x2080, 0xE041,
+                   0xA001, 0x60C0, 0x6180, 0xA141, 0x6300, 0xA3C1, 0xA281, 0x6240,
+                   0x6600, 0xA6C1, 0xA781, 0x6740, 0xA501, 0x65C0, 0x6480, 0xA441,
+                   0x6C00, 0xACC1, 0xAD81, 0x6D40, 0xAF01, 0x6FC0, 0x6E80, 0xAE41,
+                   0xAA01, 0x6AC0, 0x6B80, 0xAB41, 0x6900, 0xA9C1, 0xA881, 0x6840,
+                   0x7800, 0xB8C1, 0xB981, 0x7940, 0xBB01, 0x7BC0, 0x7A80, 0xBA41,
+                   0xBE01, 0x7EC0, 0x7F80, 0xBF41, 0x7D00, 0xBDC1, 0xBC81, 0x7C40,
+                   0xB401, 0x74C0, 0x7580, 0xB541, 0x7700, 0xB7C1, 0xB681, 0x7640,
+                   0x7200, 0xB2C1, 0xB381, 0x7340, 0xB101, 0x71C0, 0x7080, 0xB041,
+                   0x5000, 0x90C1, 0x9181, 0x5140, 0x9301, 0x53C0, 0x5280, 0x9241,
+                   0x9601, 0x56C0, 0x5780, 0x9741, 0x5500, 0x95C1, 0x9481, 0x5440,
+                   0x9C01, 0x5CC0, 0x5D80, 0x9D41, 0x5F00, 0x9FC1, 0x9E81, 0x5E40,
+                   0x5A00, 0x9AC1, 0x9B81, 0x5B40, 0x9901, 0x59C0, 0x5880, 0x9841,
+                   0x8801, 0x48C0, 0x4980, 0x8941, 0x4B00, 0x8BC1, 0x8A81, 0x4A40,
+                   0x4E00, 0x8EC1, 0x8F81, 0x4F40, 0x8D01, 0x4DC0, 0x4C80, 0x8C41,
+                   0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641,
+                   0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040 
+                };
+                uint16_t CRC16 (const uint8_t* data, uint16_t length)
+                {
+                   uint8_t tmp;
+                   uint16_t crcWord = 0xFFFF;
+                   while (length--)
+                   {
+                      tmp = *data++ ^ crcWord;
+                      crcWord >>= 8;
+                      crcWord ^= crcTable[tmp];
+                   }
+                   return crcWord;
+                }
+                1.3. UART communication examples
+                 Note: If Tiny BMS device is in sleep mode, the first command must be send twice. After received the first 
+                 command BMS wakes up from sleep mode, but the response to the command will be sent when it 
+                 receives the command a second time. Tiny BMS does not enter sleep mode again while communication is 
+                 ongoing.
+                1.3.1. MODBUS write registers example
+                Below is an example, how to configure Over-Voltage Cutoff threshold to 4.2 V value and Under-Voltage 
+                Cutoff threshold to 2.5 V value using MODBUS write command:
+                Over-Voltage Cutoff register address is 315 (0x013B)
+                Under-Voltage Cutoff register address is 316 (0x013C)
+                According to 1.1.7 chapter: 
+                ADDR = 0x013B (according to Tiny BMS registers map);
+                RL=0x02 (write two registers);
+                PL=0x04 (all Tiny BMS registers contains two bytes);
+                DATA: 4.2 V=4200 mV (0x1068), 2.5 V=2500 mV (0x09C4);
+                 www.enepaq.com                   Revision D, 2025-07-04                        Page 12
+                                  Tiny BMS Communication Protocols
+    CRC = 0x6119.
+    Command request bytes sequence to send to BMS according to 1.1.7 chapter:
+    0xAA 0x10 0x01 0x3B 0x00 0x02 0x04 0x10 0x68 0x09 0xC4 0x19 0x61.
+    If command was sended successfully, BMS responds with data:
+    0xAA 0x10 0x01 0x3B 0x00 0x02 0x28 0x22
+    Configured registers block address – 0x013B; 
+    Configurred two registers – 0x0002; 
+    CRC – 0x2228. 
+    1.3.2. MODBUS read registers example
+    Below is an example, how to read five cells voltages (cell 5 to cell 9) using MODBUS read command:
+    According to 1.1.6 chapter: 
+    ADDR = 0x0005 (cell 5 address according to Tiny BMS registers map);
+    RL=0x05 (read five registers);
+    CRC = 0x138C.
+    Command request bytes sequence to send to BMS according to 1.1.6 chapter:
+    0xAA 0x03 0x00 0x05 0x00 0x05 0x8C 0x13.
+    If command was sent successfully, BMS responds with data:
+    0xAA 0x03 0x0A 0x97 0x40 0x97 0x40 0x97 0x2C 0x97 0x2C 0x97 0x2C 0x3E 0xC7
+    Payload length – 0x0A (10 bytes);
+    Cell 5 voltage – 0x9740 (38720 decimal or 3.872 V according to Tiny BMS registers map)
+    Cell 6 voltage – 0x9740 (38720 decimal or 3.872 V according to Tiny BMS registers map)
+    Cell 7 voltage – 0x972C (38700 decimal or 3.870 V according to Tiny BMS registers map)
+    Cell 8 voltage – 0x972C (38700 decimal or 3.870 V according to Tiny BMS registers map)
+    Cell 9 voltage – 0x972C (38700 decimal or 3.870 V according to Tiny BMS registers map)
+    CRC – 0xC73E. 
+    1.3.3. Tiny BMS read temperatures example
+    Below is provided an example, how to read temperature values using read Tiny BMS device temperatures 
+    command:
+    Command request bytes sequence to send to BMS according to 1.1.18 chapter:
+    0xAA 0x1B 0x3F 0x1B
+    CRC = 0x1B3F.
+    If command was sent successfully, BMS responds with data:
+    0xAA 0x1B 0x06 0x16 0x01 0x14 0x01 0x16 0x01 0x0E 0x4E
+    Payload length – 0x06 (6 bytes);
+    Tiny BMS internal temperature – 0x0116 (278 decimal or 27.8 °C according to Tiny BMS registers map)
+    Tiny BMS external #1 temperature – 0x0114 (276 decimal or 27.6 °C according to Tiny BMS registers map)
+    Tiny BMS external #2 temperature – 0x0116 (278 decimal or 27.8 °C according to Tiny BMS registers map)
+    CRC – 0x4E0E. 
+     www.enepaq.com    Revision D, 2025-07-04   Page 13
+                                                                                                         Tiny BMS Communication Protocols
+                        Chapter 2: Tiny BMS CAN bus communication protocol
+                        2. Introduction
+                        Tiny BMS  device used along with  Enepaq CAN-UART  converter module gives an instant  CAN  bus 
+                        connectivity with the user side CAN controller or other industrial equipment. Various proprietary commands 
+                        are available for fast  CAN  bus communication. This chapter in detail covers all available commands 
+                        implemented to communicate with Tiny BMS device.  An internal Tiny BMS registers map is given in 
+                        Chapter 3.
+                        Note: CAN bitrate is 500 kbit/s (not allowed to change by the user). Default node ID after firmware update 
+                        is 0x01. When multi-slave CAN bus topology is used, node ID can be assigned with 19 Tiny BMS CAN 
+                        command. Automatic node ID assignment is not available.
+                        Note: Tiny BMS CAN-UART converter works and CAN bus communication is available only when BMS 
+                        device is in active state (charging, discharging or Ignition enabled).
+                        2.1. CAN bus communication commands list
+                        2.1.1. Reset Tiny BMS, clear Events and Statistics
+                        Request to BMS
+                                 CAN identifier 11 bits                                              8 data bytes*
+                        10 9 8 7 6 5 4 3 2 1 0 Byte 1                          Byte 2          Byte 3*  Byte 4*    Byte 5*   Byte 6*   Byte 7*  Byte 8*
+                         0 1 0 0 0 Node ID (0x01...0x3F) 0x02                 OPTION            0x00     0x00       0x00      0x00      0x00     0x00
+                                        Default node ID - 0x01          0x01 – Clear Events
+                                                                       0x02 – Clear Statistics
+                                                                         0x05 – Reset BMS
+                        * - Last command bytes with zeros can be ignored
+                        Response from BMS [OK]
+                                 CAN identifier 11 bits          2 data bytes
+                        10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2
+                         0 1 0 0 1 Node ID (0x01...0x3F) 0x01            0x02
+                                        Default node ID - 0x01
+                        Response from BMS [ERROR]
+                                 CAN identifier 11 bits                 3 data bytes
+                        10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                       Byte 3
+                         0 1 0 0 1 Node ID (0x01...0x3F) 0x00            0x02      ERROR
+                                        Default node ID - 0x01
+                        ERROR – Response error code
+                        2.1.2. Read Tiny BMS registers block
+                        Request to BMS
+                                 CAN identifier 11 bits                                              8 data bytes*
+                        10 9 8 7 6 5 4 3 2 1 0 Byte 1                      Byte 2          Byte 3        Byte 4    Byte 5    Byte 6*   Byte 7*  Byte 8*
+                         0 1 0 0 0 Node ID (0x01...0x3F) 0x03            ADDR:MSB        ADDR:LSB        0x00        RL       0x00      0x00     0x00
+                                        Default node ID - 0x01                    [UINT_16]
+                        * - Last command bytes with zeros can be ignored
+                        ADDR – Registers block start addresses
+                        RL – Registers to read. Max. 127 (0x7F) registers
+                        The number of CAN messages responded from BMS is equal to the count of registers requested to read. First CAN message returns 
+                        first register value and each other CAN message returns next registers values respectively.
+                         www.enepaq.com                                   Revision D, 2025-07-04                                              Page 14
+                                                                           Tiny BMS Communication Protocols
+         Response from BMS [OK] – MSG 1
+                CAN identifier 11 bits                          6 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2           Byte 3    Byte 4       Byte 5      Byte 6
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x03    PL     DATA1:MSB    DATA1:LSB     0x00
+                      Default node ID - 0x01                           [UINT_16]
+         Response from BMS [OK] – MSG n
+                CAN identifier 11 bits                          6 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2           Byte 3    Byte 4       Byte 5      Byte 6
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x03    PL     DATAn:MSB    DATAn:LSB      n-1
+                      Default node ID - 0x01                           [UINT_16]
+        PL – Payload (DATA) length in bytes
+        DATA – Registers data
+         Response from BMS [ERROR]
+                CAN identifier 11 bits          3 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2            Byte 3
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x00    0x03    ERROR
+                      Default node ID - 0x01
+        ERROR – Response error code
+        2.1.3. Write Tiny BMS registers block
+        The number of CAN messages sent to BMS is equal to the count of registers requested to write. First CAN message contains start 
+        address, register length and first register value and each other CAN message contains next registers values respectively.
+         Request to BMS – MSG 1
+                CAN identifier 11 bits                                  8 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1            Byte 2    Byte 3    Byte 4 Byte 5    Byte 6     Byte 7    Byte 8
+         0 1 0 0 0 Node ID (0x01...0x3F) 0x10  ADDR:MSB ADDR:LSB      0x00     RL   DATA1:MSB DATA1:LSB     0x00
+                      Default node ID - 0x01         [UINT_16]                             [UINT_16]
+         Request to BMS – MSG n
+                CAN identifier 11 bits                                  8 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1            Byte 2    Byte 3    Byte 4 Byte 5    Byte 6     Byte 7    Byte 8
+         0 1 0 0 0 Node ID (0x01...0x3F) 0x10  ADDR:MSB ADDR:LSB      0x00     RL   DATAn:MSB DATAn:LSB      n-1
+                      Default node ID - 0x01         [UINT_16]                             [UINT_16]
+        ADDR - Registers block start addresses. Start address can be in range 0x12C to 0x18F
+        RL – Registers to write. Max. 100 (0x64) registers
+        DATA – Registers data to write
+         Response from BMS [OK]
+                CAN identifier 11 bits                          6 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2             Byte 3      Byte 4     Byte 5    Byte 6
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x10   ADDR:MSB    ADDR:LSB      0x00      RL
+                      Default node ID - 0x01                   [UINT_16]
+        ADDR – Configured registers blosck start address
+        RL – Configured registers
+         Response from BMS [ERROR]
+                CAN identifier 11 bits          3 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2            Byte 3
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x00    0x10    ERROR
+                      Default node ID - 0x01
+        ERROR – Response error code
+        2.1.4. Read Tiny BMS newest Events
+         Request to BMS
+                CAN identifier 11 bits                                8 data bytes*
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1           Byte 2*  Byte 3*  Byte 4*  Byte 5*  Byte 6*  Byte 7*  Byte 8*
+         0 1 0 0 0 Node ID (0x01...0x3F)  0x11    0x00     0x00     0x00     0x00     0x00     0x00     0x00
+                      Default node ID - 0x01
+          www.enepaq.com                          Revision D, 2025-07-04                                  Page 15
+                                                                                                       Tiny BMS Communication Protocols
+                       * - Last command bytes with zeros can be ignored
+                       The number of CAN messages responded from BMS is equal to the count of events requested. First CAN message returns current 
+                       BMS timestamp and each other CAN message returns new event ID and timestamp respectively.
+                       Response from BMS [OK] – MSG 1
+                                CAN identifier 11 bits                                          8 data bytes
+                        10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2 Byte 3                       Byte 4     Byte 5    Byte 6      Byte 7      Byte 8
+                        0 1 0 0 1 Node ID (0x01...0x3F)        0x01    0x11      PL     BTSP:LSB      BTSP     BTSP      BTSP:MSB       0x00
+                                       Default node ID - 0x01                                            [UINT_32]
+                       Response from BMS [OK] – MSG n
+                                CAN identifier 11 bits                                          8 data bytes
+                        10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2 Byte 3                       Byte 4      Byte 5      Byte 6      Byte 7   Byte 8
+                        0 1 0 0 1 Node ID (0x01...0x3F)        0x01    0x11      PL      TSPn:LSB      TSPn     TSPn:MSB       IDn       n-1
+                                       Default node ID - 0x01                                        [UINT_24]               [UINT_8]
+                       PL – Payload (DATA) length in bytes
+                       BTSP – Tiny BMS timestamp in seconds
+                       TSP – Newest Event timestamp in seconds
+                       ID – Event ID
+                       Response from BMS [ERROR]
+                                CAN identifier 11 bits                3 data bytes
+                        10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                     Byte 3
+                        0 1 0 0 1 Node ID (0x01...0x3F) 0x00           0x11      ERROR
+                                       Default node ID - 0x01
+                       ERROR – Response error code
+                       2.1.5. Read Tiny BMS all Events
+                       Request to BMS
+                                CAN identifier 11 bits                                          8 data bytes*
+                        10 9 8 7 6 5 4 3 2 1 0 Byte 1                   Byte 2*   Byte 3*    Byte 4*   Byte 5*    Byte 6*    Byte 7*   Byte 8*
+                        0 1 0 0 0 Node ID (0x01...0x3F)        0x12      0x00      0x00       0x00      0x00       0x00       0x00      0x00
+                                       Default node ID - 0x01
+                       * - Last command bytes with zeros can be ignored
+                       The number of CAN messages responded from BMS is equal to the count of events requested. First CAN message returns current 
+                       BMS timestamp and each other CAN message returns event ID and timestamp respectively.
+                       Response from BMS [OK] – MSG 1
+                                CAN identifier 11 bits                                          8 data bytes
+                        10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2 Byte 3                       Byte 4     Byte 5    Byte 6      Byte 7      Byte 8
+                        0 1 0 0 1 Node ID (0x01...0x3F)        0x01    0x12      PL     BTSP:LSB      BTSP     BTSP      BTSP:MSB       0x00
+                                       Default node ID - 0x01                                            [UINT_32]
+                       Response from BMS [OK] – MSG n
+                                CAN identifier 11 bits                                          8 data bytes
+                        10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2 Byte 3                       Byte 4      Byte 5      Byte 6      Byte 7   Byte 8
+                        0 1 0 0 1 Node ID (0x01...0x3F)        0x01    0x12      PL      TSPn:LSB      TSPn     TSPn:MSB       IDn       n-1
+                                       Default node ID - 0x01                                        [UINT_24]               [UINT_8]
+                       PL – Payload (DATA) length in bytes
+                       BTSP – Tiny BMS timestamp in seconds
+                       TSP – Newest Event timestamp in seconds
+                       ID – Event ID
+                       Response from BMS [ERROR]
+                                CAN identifier 11 bits                3 data bytes
+                        10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                     Byte 3
+                        0 1 0 0 1 Node ID (0x01...0x3F) 0x00           0x12      ERROR
+                                       Default node ID - 0x01
+                       ERROR – Response error code
+                        www.enepaq.com                                  Revision D, 2025-07-04                                             Page 16
+                                                                                            Tiny BMS Communication Protocols
+          2.1.6. Read battery pack voltage (Reg:36)
+          Request to BMS
+                   CAN identifier 11 bits                                            8 data bytes*
+           10 9 8 7 6 5 4 3 2 1 0 Byte 1                    Byte 2*    Byte 3*    Byte 4*   Byte 5*    Byte 6*    Byte 7*    Byte 8*
+           0 1 0 0 0 Node ID (0x01...0x3F)         0x14      0x00       0x00       0x00      0x00       0x00       0x00       0x00
+                           Default node ID - 0x01
+          * - Last command bytes with zeros can be ignored
+          Response from BMS [OK]
+                   CAN identifier 11 bits                                     6 data bytes
+           10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                        Byte 3       Byte 4      Byte 5       Byte 6
+           0 1 0 0 1 Node ID (0x01...0x3F) 0x01            0x14      DATA:LSB        DATA       DATA       DATA:MSB
+                           Default node ID - 0x01                                        [FLOAT]
+          Response from BMS [ERROR]
+                   CAN identifier 11 bits                 3 data bytes
+           10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                       Byte 3
+           0 1 0 0 1 Node ID (0x01...0x3F) 0x00             0x14     ERROR
+                           Default node ID - 0x01
+          ERROR – Response error code
+          2.1.7. Read battery pack current (Reg:38)
+          Request to BMS
+                   CAN identifier 11 bits                                            8 data bytes*
+           10 9 8 7 6 5 4 3 2 1 0 Byte 1                    Byte 2*    Byte 3*    Byte 4*   Byte 5*    Byte 6*    Byte 7*    Byte 8*
+           0 1 0 0 0 Node ID (0x01...0x3F)         0x15      0x00       0x00       0x00      0x00       0x00       0x00       0x00
+                           Default node ID - 0x01
+          * - Last command bytes with zeros can be ignored
+          Response from BMS [OK]
+                   CAN identifier 11 bits                                     6 data bytes
+           10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                        Byte 3       Byte 4      Byte 5       Byte 6
+           0 1 0 0 1 Node ID (0x01...0x3F) 0x01            0x15      DATA:LSB        DATA       DATA       DATA:MSB
+                           Default node ID - 0x01                                        [FLOAT]
+          Response from BMS [ERROR]
+                   CAN identifier 11 bits                 3 data bytes
+           10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                       Byte 3
+           0 1 0 0 1 Node ID (0x01...0x3F) 0x00             0x15     ERROR
+                           Default node ID - 0x01
+          ERROR – Response error code
+          2.1.8. Read battery pack max. cell voltage (Reg:41)
+          Request to BMS
+                   CAN identifier 11 bits                                            8 data bytes*
+           10 9 8 7 6 5 4 3 2 1 0 Byte 1                    Byte 2*    Byte 3*    Byte 4*   Byte 5*    Byte 6*    Byte 7*    Byte 8*
+           0 1 0 0 0 Node ID (0x01...0x3F)         0x16      0x00       0x00       0x00      0x00       0x00       0x00       0x00
+                           Default node ID - 0x01
+          * - Last command bytes with zeros can be ignored
+          Response from BMS [OK]
+                   CAN identifier 11 bits                          4 data bytes
+           10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                        Byte 3         Byte 4
+           0 1 0 0 1 Node ID (0x01...0x3F) 0x01            0x16      DATA:LSB      DATA:MSB
+                           Default node ID - 0x01                           [UINT_16]
+            www.enepaq.com                                   Revision D, 2025-07-04                                              Page 17
+                                                                                                                  Tiny BMS Communication Protocols
+                          Response from BMS [ERROR]
+                                    CAN identifier 11 bits                    3 data bytes
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                             Byte 3
+                           0 1 0 0 1 Node ID (0x01...0x3F) 0x00                0x16       ERROR
+                                            Default node ID - 0x01
+                          ERROR – Response error code
+                          2.1.9. Read battery pack min. cell voltage (Reg:40)
+                          Request to BMS
+                                    CAN identifier 11 bits                                                 8 data bytes*
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1                         Byte 2*     Byte 3*    Byte 4*     Byte 5*     Byte 6*     Byte 7*    Byte 8*
+                           0 1 0 0 0 Node ID (0x01...0x3F)            0x17       0x00        0x00        0x00       0x00        0x00        0x00        0x00
+                                            Default node ID - 0x01
+                          * - Last command bytes with zeros can be ignored
+                          Response from BMS [OK]
+                                    CAN identifier 11 bits                             4 data bytes
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                              Byte 3          Byte 4
+                           0 1 0 0 1 Node ID (0x01...0x3F) 0x01                0x17      DATA:LSB        DATA:MSB
+                                            Default node ID - 0x01                                [UINT_16]
+                          Response from BMS [ERROR]
+                                    CAN identifier 11 bits                    3 data bytes
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                             Byte 3
+                           0 1 0 0 1 Node ID (0x01...0x3F) 0x00                0x17       ERROR
+                                            Default node ID - 0x01
+                          ERROR – Response error code
+                          2.1.10. Read Tiny BMS online status (Reg:50)
+                          Request to BMS
+                                    CAN identifier 11 bits                                                 8 data bytes*
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1                         Byte 2*     Byte 3*    Byte 4*     Byte 5*     Byte 6*     Byte 7*    Byte 8*
+                           0 1 0 0 0 Node ID (0x01...0x3F)            0x18       0x00        0x00        0x00       0x00        0x00        0x00        0x00
+                                            Default node ID - 0x01
+                          * - Last command bytes with zeros can be ignored
+                          Response from BMS [OK]
+                                    CAN identifier 11 bits                             4 data bytes
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                              Byte 3          Byte 4
+                           0 1 0 0 1 Node ID (0x01...0x3F) 0x01                0x18      DATA:LSB        DATA:MSB
+                                            Default node ID - 0x01                        0x91 – Charging [INFO]
+                                                                                        0x92 – Fully charged [INFO]
+                                                                                         0x93 – Discharging [INFO]
+                                                                                        0x96 – Regeneration [INFO]
+                                                                                             0x97 – Idle [INFO]
+                                                                                           0x9B – Fault [ERROR]
+                          Response from BMS [ERROR]
+                                    CAN identifier 11 bits                    3 data bytes
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                             Byte 3
+                           0 1 0 0 1 Node ID (0x01...0x3F) 0x00                0x18       ERROR
+                                            Default node ID - 0x01
+                          ERROR – Response error code
+                          2.1.11. Read Tiny BMS lifetime counter (Reg:32)
+                          Request to BMS
+                                    CAN identifier 11 bits                                                 8 data bytes*
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1                         Byte 2*     Byte 3*    Byte 4*     Byte 5*     Byte 6*     Byte 7*    Byte 8*
+                           0 1 0 0 0 Node ID (0x01...0x3F)            0x19       0x00        0x00        0x00       0x00        0x00        0x00        0x00
+                                            Default node ID - 0x01
+                           www.enepaq.com                                       Revision D, 2025-07-04                                                    Page 18
+                                                                           Tiny BMS Communication Protocols
+        * - Last command bytes with zeros can be ignored
+         Response from BMS [OK]
+                CAN identifier 11 bits                          6 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2             Byte 3     Byte 4    Byte 5     Byte 6
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x19    DATA:LSB    DATA      DATA     DATA:MSB
+                      Default node ID - 0x01                             [UINT32]
+         Response from BMS [ERROR]
+                CAN identifier 11 bits          3 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2            Byte 3
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x00    0x19    ERROR
+                      Default node ID - 0x01
+        ERROR – Response error code
+        2.1.12. Read Tiny BMS estimated SOC value (Reg:46)
+         Request to BMS
+                CAN identifier 11 bits                                8 data bytes*
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1           Byte 2*  Byte 3*  Byte 4*  Byte 5*  Byte 6*  Byte 7*  Byte 8*
+         0 1 0 0 0 Node ID (0x01...0x3F)  0x1A    0x00     0x00     0x00     0x00     0x00     0x00     0x00
+                      Default node ID - 0x01
+        * - Last command bytes with zeros can be ignored
+         Response from BMS [OK]
+                CAN identifier 11 bits                          6 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2             Byte 3     Byte 4    Byte 5     Byte 6
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x1A    DATA:LSB    DATA      DATA     DATA:MSB
+                      Default node ID - 0x01                             [UINT32]
+         Response from BMS [ERROR]
+                CAN identifier 11 bits          3 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2            Byte 3
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x00    0x1A    ERROR
+                      Default node ID - 0x01
+        ERROR – Response error code
+        2.1.13. Read Tiny BMS device temperatures (Reg:48, Reg:42, Reg:43)
+         Request to BMS
+                CAN identifier 11 bits                                8 data bytes*
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1           Byte 2*  Byte 3*  Byte 4*  Byte 5*  Byte 6*  Byte 7*  Byte 8*
+         0 1 0 0 0 Node ID (0x01...0x3F)  0x1B    0x00     0x00     0x00     0x00     0x00     0x00     0x00
+                      Default node ID - 0x01
+        * - Last command bytes with zeros can be ignored
+         Response from BMS [OK] – MSG 1
+                CAN identifier 11 bits                          6 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2           Byte 3     Byte 4       Byte 5     Byte 6
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x1B     PL     DATA1:LSB    DATA1:MSB     0x00
+                      Default node ID - 0x01                             [INT_16]
+         Response from BMS [OK] – MSG 2
+                CAN identifier 11 bits                          6 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2           Byte 3     Byte 4       Byte 5     Byte 6
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x1B     PL     DATA2:LSB    DATA2:MSB     0x01
+                      Default node ID - 0x01                             [INT_16]
+         Response from BMS [OK] – MSG 3
+                CAN identifier 11 bits                          6 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2           Byte 3     Byte 4       Byte 5     Byte 6
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x1B     PL     DATA3:LSB    DATA3:MSB     0x02
+                      Default node ID - 0x01                             [INT_16]
+          www.enepaq.com                          Revision D, 2025-07-04                                  Page 19
+                                                                                                                  Tiny BMS Communication Protocols
+                          PL – Payload (DATA) length in bytes
+                          DATA1 – Tiny BMS internal temperature
+                          DATA2 – External temperature sensor #1 temperature value (value of -32768 if not connected)
+                          DATA3 – External temperature sensor #2 temperature value (value of -32768 if not connected)
+                          Response from BMS [ERROR]
+                                    CAN identifier 11 bits                    3 data bytes
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                             Byte 3
+                           0 1 0 0 1 Node ID (0x01...0x3F) 0x00                0x1B       ERROR
+                                            Default node ID - 0x01
+                          ERROR – Response error code
+                          2.1.14. Read battery pack cells voltages
+                          Request to BMS
+                                    CAN identifier 11 bits                                                 8 data bytes*
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1                         Byte 2*     Byte 3*    Byte 4*     Byte 5*     Byte 6*     Byte 7*    Byte 8*
+                           0 1 0 0 0 Node ID (0x01...0x3F)            0x1C       0x00        0x00        0x00       0x00        0x00        0x00        0x00
+                                            Default node ID - 0x01
+                          * - Last command bytes with zeros can be ignored
+                          BMS response returned CAN messages are equal to battery cells count. First CAN message returns first cell voltage and each other 
+                          CAN message returns next cells voltages respectively.
+                          Response from BMS [OK] – MSG 1
+                                    CAN identifier 11 bits                                          6 data bytes
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                           Byte 3        Byte 4            Byte 5        Byte 6
+                           0 1 0 0 1 Node ID (0x01...0x3F) 0x01                0x1C        PL       DATA1:LSB         DATA1:MSB         0x00
+                                            Default node ID - 0x01                                            [UINT_16]
+                          Response from BMS [OK] – MSG n
+                                    CAN identifier 11 bits                                          6 data bytes
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                           Byte 3        Byte 4            Byte 5        Byte 6
+                           0 1 0 0 1 Node ID (0x01...0x3F) 0x01                0x1C        PL       DATAn:LSB         DATAn:MSB          n-1
+                                            Default node ID - 0x01                                            [UINT_16]
+                          PL – Payload (DATA) length in bytes
+                          Response from BMS [ERROR]
+                                    CAN identifier 11 bits                    3 data bytes
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                             Byte 3
+                           0 1 0 0 1 Node ID (0x01...0x3F) 0x00                0x1C       ERROR
+                                            Default node ID - 0x01
+                          ERROR – Response error code
+                          2.1.15. Read Tiny BMS settings values (min, max, default, current)
+                          Request to BMS
+                                    CAN identifier 11 bits                                                 8 data bytes*
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1                               Byte 2            Byte 3    Byte 4 Byte 5* Byte 6* Byte 7* Byte 8*
+                           0 1 0 0 0 Node ID (0x01...0x3F) 0x1D                      OPTION              0x00       RL      0x00      0x00     0x00      0x00
+                                            Default node ID - 0x01             0x01 – Min. settings
+                                                                              0x02 – Max. settings
+                                                                             0x03 – Default settings
+                                                                             0x04 – Current settings
+                          * - Last command bytes with zeros can be ignored
+                          RL – Registers to read. Max. 100 (0x64) registers
+                          The number of CAN messages responded from BMS is equal to the count of settings registers requested. First CAN message returns 
+                          first register and each other CAN message returns next registers respectively.
+                          Response from BMS [OK] – MSG 1
+                                    CAN identifier 11 bits                                          6 data bytes
+                          10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2                           Byte 3        Byte 4            Byte 5        Byte 6
+                           0 1 0 0 1 Node ID (0x01...0x3F) 0x01                0x1D        PL       DATA1:LSB         DATA1:MSB         0x00
+                                            Default node ID - 0x01                                            [UINT_16]
+                           www.enepaq.com                                       Revision D, 2025-07-04                                                    Page 20
+                                                                           Tiny BMS Communication Protocols
+         Response from BMS [OK] – MSG n
+                CAN identifier 11 bits                          6 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2           Byte 3     Byte 4       Byte 5     Byte 6
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x1D     PL     DATAn:LSB    DATAn:MSB      n-1
+                      Default node ID - 0x01                            [UINT_16]
+        PL – Payload (DATA) length in bytes
+         Response from BMS [ERROR]
+                CAN identifier 11 bits          3 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2            Byte 3
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x00    0x1D    ERROR
+                      Default node ID - 0x01
+        ERROR – Response error code
+        2.1.16. Read Tiny BMS version
+         Request to BMS
+                CAN identifier 11 bits                                8 data bytes*
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1           Byte 2*  Byte 3*  Byte 4*  Byte 5*  Byte 6*  Byte 7*  Byte 8*
+         0 1 0 0 0 Node ID (0x01...0x3F)  0x1E    0x00     0x00     0x00     0x00     0x00     0x00     0x00
+                      Default node ID - 0x01
+        * - Last command bytes with zeros can be ignored
+         Response from BMS [OK]
+                CAN identifier 11 bits                                8 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2 Byte 3           Byte 4  Byte 5  Byte 6    Byte 7      Byte 8
+         0 1 0 0 1 Node ID (0x01...0x3F)  0x01   0x1E   PL    DATA1   DATA2    DATA3   DATA4:LSB   DATA4:MSB
+                      Default node ID - 0x01                  [UINT_8] [UINT_8] [UINT_8]      [UINT_16]
+        PL – Payload (DATA) length in bytes
+        DATA1 – Hardware version
+        DATA2 – Hardware changes version
+        DATA3 – Firmware public version
+        DATA4 – Firmware internal version
+         Response from BMS [ERROR]
+                CAN identifier 11 bits          3 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2            Byte 3
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x00    0x1E    ERROR
+                      Default node ID - 0x01
+        ERROR – Response error code
+        2.1.17. Read Tiny BMS calculated speed, left distance and estimated time values
+         Request to BMS
+                CAN identifier 11 bits                                8 data bytes*
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1           Byte 2*  Byte 3*  Byte 4*  Byte 5*  Byte 6*  Byte 7*  Byte 8*
+         0 1 0 0 0 Node ID (0x01...0x3F)  0x20    0x00     0x00     0x00     0x00     0x00     0x00     0x00
+                      Default node ID - 0x01
+        * - Last command bytes with zeros can be ignored
+         Response from BMS [OK] – MSG 1
+                CAN identifier 11 bits                                8 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2 Byte 3            Byte 4    Byte 5   Byte 6    Byte 7    Byte 8
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x20    PL   DATA1:LSB   DATA1    DATA1   DATA1:MSB    0x00
+                      Default node ID - 0x01                                  [FLOAT]
+         Response from BMS [OK] – MSG 2
+                CAN identifier 11 bits                                8 data bytes
+         10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2 Byte 3            Byte 4    Byte 5   Byte 6    Byte 7    Byte 8
+         0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x20    PL   DATA2:LSB   DATA2    DATA2   DATA2:MSB    0x01
+                      Default node ID - 0x01                                 [UINT_32]
+          www.enepaq.com                          Revision D, 2025-07-04                                  Page 21
+                                                                                      Tiny BMS Communication Protocols
+                    Response from BMS [OK] – MSG 3
+                           CAN identifier 11 bits                                8 data bytes
+                    10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2 Byte 3            Byte 4    Byte 5   Byte 6    Byte 7    Byte 8
+                    0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x20    PL   DATA3:LSB   DATA3    DATA3   DATA3:MSB    0x02
+                                 Default node ID - 0x01                                 [UINT_32]
+                    PL – Payload length in bytes
+                    DATA1 – Speed (km/h)
+                    DATA2 – Left distance to empty battery (km)
+                    DATA3 – Estimated time left to empty battery (seconds)
+                    Response from BMS [ERROR]
+                           CAN identifier 11 bits          3 data bytes
+                    10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2             Byte 3
+                    0 1 0 0 1 Node ID (0x01...0x3F) 0x00    0x20    ERROR
+                                 Default node ID - 0x01
+                    ERROR – Response error code
+                    2.1.18. Read CAN node ID
+                    Request to BMS
+                           CAN identifier 11 bits                                8 data bytes*
+                    10 9 8 7 6 5 4 3 2 1 0 Byte 1            Byte 2* Byte 3*  Byte 4*  Byte 5*  Byte 6*  Byte 7*  Byte 8*
+                    0 1 0 0 0 0 0 0 0 0 0            0x28    0x00     0x00     0x00     0x00     0x00     0x00     0x00
+                    * - Last command bytes with zeros can be ignored
+                    Response from BMS [OK]
+                           CAN identifier 11 bits          3 data bytes
+                    10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2             Byte 3
+                    0 1 0 0 1 Node ID (0x01...0x3F) 0x01    0x28     DATA
+                                 Default node ID - 0x01
+                    DATA – CAN-UART converter CAN node ID (0x01 to 0x3F)
+                    Response from BMS [ERROR]
+                           CAN identifier 11 bits          3 data bytes
+                    10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2             Byte 3
+                    0 1 0 0 1 Node ID (0x01...0x3F) 0x00    0x28    ERROR
+                                 Default node ID - 0x01
+                    ERROR – Response error code
+                    2.1.19. Write CAN node ID
+                    Request to BMS
+                           CAN identifier 11 bits                                8 data bytes*
+                    10 9 8 7 6 5 4 3 2 1 0 Byte 1            Byte 2  Byte 3*  Byte 4*  Byte 5*  Byte 6*  Byte 7*  Byte 8*
+                    0 1 0 0 0 Old ID (0x01...0x3F)   0x29    DATA     0x00     0x00     0x00     0x00     0x00     0x00
+                    * - Last command bytes with zeros can be ignored
+                    DATA - CAN-UART converter CAN node new ID (0x01 to 0x3F)
+                    Response from BMS [OK]
+                           CAN identifier 11 bits          3 data bytes
+                    10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2             Byte 3
+                    0 1 0 0 1 New ID (0x01...0x3F)   0x01   0x29     DATA
+                    DATA – CAN-UART converter CAN node new ID (0x01 to 0x3F)
+                    Response from BMS [ERROR]
+                           CAN identifier 11 bits          3 data bytes
+                    10 9 8 7 6 5 4 3 2 1 0 Byte 1 Byte 2             Byte 3
+                    0 1 0 0 1 New ID (0x01...0x3F)   0x00   0x28    ERROR
+                    ERROR – Response error code
+                     www.enepaq.com                          Revision D, 2025-07-04                                  Page 22
+                                                                                                 Tiny BMS Communication Protocols
+           Chapter 3: Tiny BMS registers map
+           3. Introduction
+           This chapter in detail covers all an internal Tiny BMS registers map.
+           3.1. Tiny BMS Live data
+           Reg. Nr.    0      1      2       3      4      5       6      7       8       9      10     11      12     13      14     15    Action
+               0                                        Cell 1 Voltage [UINT_16] / Resolution 0.1 mV                                          R
+               1                                        Cell 2 Voltage [UINT_16] / Resolution 0.1 mV                                          R
+               2                                        Cell 3 Voltage [UINT_16] / Resolution 0.1 mV                                          R
+               3                                        Cell 4 Voltage [UINT_16] / Resolution 0.1 mV                                          R
+               4                                        Cell 5 Voltage [UINT_16] / Resolution 0.1 mV                                          R
+               5                                        Cell 6 Voltage [UINT_16] / Resolution 0.1 mV                                          R
+               6                                        Cell 7 Voltage [UINT_16] / Resolution 0.1 mV                                          R
+               7                                        Cell 8 Voltage [UINT_16] / Resolution 0.1 mV                                          R
+               8                                        Cell 9 Voltage [UINT_16] / Resolution 0.1 mV                                          R
+               9                                        Cell 10 Voltage [UINT_16] / Resolution 0.1 mV                                         R
+              10                                        Cell 11 Voltage [UINT_16] / Resolution 0.1 mV                                         R
+              11                                        Cell 12 Voltage [UINT_16] / Resolution 0.1 mV                                         R
+              12                                        Cell 13 Voltage [UINT_16] / Resolution 0.1 mV                                         R
+              13                                        Cell 14 Voltage [UINT_16] / Resolution 0.1 mV                                         R
+              14                                        Cell 15 Voltage [UINT_16] / Resolution 0.1 mV                                         R
+              15                                        Cell 16 Voltage [UINT_16] / Resolution 0.1 mV                                         R
+             16-31                                                         Reserved                                                           R
+              32                                      BMS Lifetime Counter [UINT_32] / Resolution 1 s                                         R
+              33
+              34                                        Estimated Time Left [UINT_32] / Resolution 1 s                                        R
+              35
+              36                                        Battery Pack Voltage [FLOAT] / Resolution 1 V                                         R
+              37
+              38                                        Battery Pack Current [FLOAT] / Resolution 1 A                                         R
+              39
+              40                                      Minimal Cell Voltage [UINT_16] / Resolution 1 mV                                        R
+              41                                      Maximal Cell Voltage [UINT_16] / Resolution 1 mV                                        R
+              42                             External Temp. Sensor #1 Temperature [INT_16] / Resolution 0.1 °C                                R
+              43                             External Temp. Sensor #2 Temperature [INT_16] / Resolution 0.1 °C                                R
+              44                                 Distance Left To Empty Battery [UINT_16] / Resolution 1 km                                   R
+              45                                State Of Health [UINT_16] [0 to 50000] / Resolution 0.002 %                                   R
+              46                                     State Of Charge [UINT_32] / Resolution 0.000001 %                                        R
+              47
+              48                                   BMS Internal Temperature [INT_16] / Resolution 0.1 °C                                      R
+              49                                                           Reserved                                                           R
+              50                            BMS Online Status [UINT_16] / 0x91-Charging, 0x92-Fully Charged,                                  R
+                                                 0x93-Discharging, 0x96-Regenertion, 0x97-Idle, 0x9B-Fault
+              51      Balancing Decision Bits [UINT_16] / First Cell - LSB Bit of LSB Byte: 1 - need balancing, 0 - cell no need balance      R
+              52               Real Balancing Bits [UINT_16] / First Cell - LSB Bit of LSB Byte: 1 - balancing, 0 – not balancing             R
+              53                                             Number Of Detected Cells [UINT_16]                                               R
+              54                                                     Speed [FLOAT] km/h                                                       R
+              55                                                                                                                              R
+             56-99                                                         Reserved                                                           R
+           3.2. Tiny BMS Statistics data
+           Reg. Nr.    0      1      2       3      4      5       6      7       8       9      10     11      12     13      14     15    Action
+              100                                       Total Distance [UINT_32] / Resolution 0.01 km                                         R
+              101
+              102                                Maximal Discharge Current [UINT_16] / Resolution 100 mA                                      R
+              103                                  Maximal Charge Current [UINT_16] / Resolution 100 mA                                       R
+              104                              Maximal Cell Voltage Difference [UINT_16] / Resolution 0.1 mV                                  R
+              105                              Under-Voltage Protection Count [UINT_16] / Resolution 1 count                                  R
+              106                               Over-Voltage Protection Count [UINT_16] / Resolution 1 count                                  R
+            www.enepaq.com                                      Revision D, 2025-07-04                                                  Page 23
+                                                                                                         Tiny BMS Communication Protocols
+                          107                         Discharge Over-Current Protection Count [UINT_16] / Resolution 1 count                        R
+                          108                          Charge Over-Curent Protection Count [UINT_16] / Resolution 1 count                           R
+                          109                               Over-Heat Protection Count [UINT_16] / Resolution 1 count                               R
+                           110                                                      Reserved                                                        R
+                           111                                    Charging Count [UINT_16] / Resolution 1 count                                     R
+                           112                                   Full Charge Count [UINT_16] / Resolution 1 count                                   R
+                           113       Min. Pack Temperature [INT_8] / Resolution 1 °C         Max. Pack Temperature [INT_8] / Resolution 1 °C        R
+                                            Last BMS Reset Event [UINT_8] /               Last Wakeup From BMS Sleep Mode Event [UINT_8] /
+                                         0x00-Unknown, 0x01-Low power reset,                     0x00-Charger connected, 0x01-Ignition, 
+                           114                0x02-Window watchdog reset,                              0x02-Discharging detected,                   R
+                                 0x03-Independent watchdog reset, 0x04-Software reset,             0x03-UART communication detected
+                                          0x05-POR/PDR reset, 0x06-PIN reset, 
+                                             0x07-Options bytes loading reset
+                           115                                                      Reserved                                                        R
+                           116                            Statistics Last Cleared On Tmestamp [UINT_32] / Resolution 1s                             R
+                           117
+                        118-199                                                     Reserved                                                        R
+                        3.3. Tiny BMS Events data
+                        Reg. Nr.   0      1      2      3      4      5      6      7      8      9      10     11     12      13     14     15   Action
+                          200                                   Event_0 Timestamp [UINT_24 LSB] / Resolution 1 s                                    R
+                          201      Event_0 Timestamp [UINT_24 MSB] / Resolution 1 s                  Event_0 Message ID* [UINT_8]                   R
+                          202                                   Event_1 Timestamp [UINT_24 LSB] / Resolution 1 s                                    R
+                          203      Event_1 Timestamp [UINT_24 MSB] / Resolution 1 s                  Event_1 Message ID* [UINT_8]                   R
+                          204                                   Event_2 Timestamp [UINT_24 LSB] / Resolution 1 s                                    R
+                          205      Event_2 Timestamp [UINT_24 MSB] / Resolution 1 s                  Event_2 Message ID* [UINT_8]                   R
+                          206                                   Event_3 Timestamp [UINT_24 LSB] / Resolution 1 s                                    R
+                          207      Event_3 Timestamp [UINT_24 MSB] / Resolution 1 s                  Event_3 Message ID* [UINT_8]                   R
+                           ...                                                          ...                                                         ...
+                           ...                              ...                                                     ...                             ...
+                          296                                  Event_48 Timestamp [UINT_24 LSB] / Resolution 1 s                                    R
+                          297      Event_48 Timestamp [UINT_24 MSB] / Resolution 1 s                 Event_48 Message ID* [UINT_8]                  R
+                          298                                                       Reserved                                                        R
+                          299                                                       Reserved                                                        R
+                        * - Events messages ID list is attached in the Chapter 4.
+                        3.4. Tiny BMS settings
+                        Reg. Nr.   0      1      2      3      4      5      6      7      8      9      10     11     12      13     14     15   Action
+                          300                            Fully Charged Voltage [UINT_16] [1200 to 4500] / Resolution 1 mV                          R/W
+                          301                          Fully Discharged Voltage [UINT_16] [1000 to 3500] / Resolution 1 mV                         R/W
+                          302                                                       Reserved                                                       R/W
+                          303                          Early Balancing Threshold [UINT_16] [1000 to 4500] / Resolution 1 mV                        R/W
+                          304                           Charge Finished Current [UINT_16] [100 to 5000]* / Resolution 1 mA                         R/W
+                          305                                Peak Discharge Current Cutoff [UINT_16] /Resolution 1 A                               R/W
+                          306                              Battery Capacity [UINT_16] [10 to 65500] / Resolution 0.01 Ah                           R/W
+                          307                           Number Of Series Cells [UINT_16] [4 to 16] / Resolution 1 cell count                       R/W
+                          308                               Allowed Disbalance [UINT_16] [15 to 100] / Resolution 1 mV                             R/W
+                          309                                                       Reserved                                                       R/W
+                          310                              Charger Startup Delay [UINT_16] [5 to 60] / Resolution 1 sec.                           R/W
+                           311                             Charger Disable Delay [UINT_16] [0 to 60] / Resolution 1 sec.                           R/W
+                          312                           Pulses Per Unit [UINT_32] [1 to 100000] / Resolution 1 pulse per unit                      R/W
+                          313
+                          314              Distance Unit Name [UINT_16] / 0x01-Meter, 0x02-Kilometer, 0x03-Feet, 0x04-Mile, 0x05-Yard              R/W
+                          315                             Over-Voltage Cutoff [UINT_16] [1200 to 4500] / Resolution 1 mV                           R/W
+                          316                             Under-Voltage Cutoff [UINT_16] [800 to 3500] / Resolution 1 mV                           R/W
+                          317                           Discharge Over-Current Cutoff [UINT_16] [1 to 750]* / Resolution 1 A                       R/W
+                          318                            Charge Over-Current Cutoff [UINT_16] [1 to 750]* / Resolution 1 A                         R/W
+                          319                                 Over-Heat Cutoff [INT_16] [+20 to +90] / Resolution 1 °C                             R/W
+                          320                         Low Temperature Charger Cutoff [INT_16] [-40 to +10] / Resolution 1 °C                       R/W
+                          321                                 Charge Restart Level[UINT_16] [60-95] / Resolution 1 %                               R/W
+                          322                                  Battery Maximum Cycles Count [UINT_16] [10-65000]                                   R/W
+                          323          State Of Health [UINT_16] [0 to 50000] / Resolution 0.002 % / [0xFFFF – when data internally accepted       R/W
+                          324                                                       Reserved                                                       R/W
+                          325                                                       Reserved                                                       R/W
+                         www.enepaq.com                                   Revision D, 2025-07-04                                              Page 24
+                                                                                                     Tiny BMS Communication Protocols
+              326                                                             Reserved                                                            R/W
+              327                                                             Reserved                                                            R/W
+              328                                 State Of Charge [UINT_16] [0 to 50000] / Resolution 0.002 %                                     R/W
+                        Invert External Current         Disable Load/Charger          Enable Charger Restart 
+              329       Sensor Direction [1st bit]   Switch Diagnostics [2nd bit]          Level [3rd bit]             Reserved(13 Bits)          R/W
+                                  (0-1)                          (0-1)                          (0-1)
+              330      Charger Type [8 bits LSB] / 0x00-Variable (Reserved),         Discharge Over-Current Cutoff Timeout[8 bits LSB] [0-        R/W
+                                 0x01-CC/CV, 0x02-CAN (Reserved)                                        30]/Resolution 1 s
+                      Load Switch Type [8 bits LSB] / 0x00-FET, 0x01-AIDO1, 
+              331             0x02-AIDO2, 0x03-DIDO1, 0x04-DIDO2,                                           Reserved                              R/W
+                         0x05-AIHO1 Active Low, 0x06-AIHO1 Active High,
+                         0x07-AIHO2 Active Low, 0x08-AIHO2 Active High
+              332     Automatic Recovery [8 bits LSB] [1 to 30] / Resolution 1                              Reserved                              R/W
+                                                   s
+                       Charger Switch Type [8 bits LSB] / 0x01-Charge FET, 
+                              0x02-AIDO1, 0x03-AIDO2, 0x04-DIDO1, 
+              333              0x05-DIDO2, 0x06-AIHO1 Active Low,                                           Reserved                              R/W
+                         0x07-AIHO1 Active High, 0x08-AIHO2 Active Low, 
+                                       0x09-AIHO2 Active High
+                         Ignition [8 bits LSB] / 0x00-Disabled, 0x01-AID01, 
+              334             0x02-AIDO2, 0x03-DIDO1, 0x04-DIDO2,                                           Reserved                              R/W
+                                      0x05-AIHO1, 0x06-AIHO2
+                                  Charger Detection [8 bits LSB] / 
+              335            0x01-Internal, 0x02-AIDO1, 0x03-AIDO2,                                         Reserved                              R/W
+                       0x04-DIDO1, 0x05-DIDO2, 0x06-AIHO1, 0x07-AIHO2
+              336                 Speed Sensor Input [8 bits LSB] /                                         Reserved                              R/W
+                             0x00-Disabled, 0x01-DIDO1, 0x02-DIDO2
+                          Precharge Pin [8 bits LSB] / 0x00-Disabed, 0x02-
+                                           Discharge FET, 
+              337     0x03-AIDO1, 0x04-AIDO2, 0x05-DIDO1, 0x06-DIDO2,                                       Reserved                              R/W
+                          0x07-AIHO1 Active low, 0x08-AIHO1 Active high,
+                          0x09-AIHO2 Active low, 0x10-AIHO2 Active high
+                                  Precharge Duration [8 bits LSB] /
+              338     0x00-0.1 sec., 0x01-0.2 sec., 0x02-0.5 sec., 0x03-1 sec.,                             Reserved                              R/W
+                         0x04-2 sec., 0x05-3 sec., 0x06-4 sec., 0x07-5 sec.
+                              Temperature Sensor Type [8 bits LSB] / 
+              339                        0x00-Dual 10K NTC,                                                 Reserved                              R/W
+                                    0x01-Multipoint Active Sensor 
+                         BMS Operation Mode [8 bits LSB] / 0x00-Dual Port 
+              340                             Operation,                                                    Reserved                              R/W
+                                     0x01-Single Port Operation
+                       Single Port Switch Type [8 bits LSB] / 0x00-FET, 0x01-
+              341        AIDO1, 0x02-AIDO2, 0x03-DIDO1, 0x04-DIDO2,                                         Reserved                              R/W
+                         0x05-AIHO1 Active Low, 0x06-AIHO1 Active High,
+                         0x07-AIHO2 Active Low, 0x08-AIHO2 Active High
+                            Broadcast Time [8 bits LSB] / 0x00-Disabled, 
+              342     0x01-0.1 sec., 0x02-0.2 sec., 0x03-0.5 sec., 0x04-1 sec.,                             Reserved                              R/W
+                               0x05-2 sec., 0x06-5 sec., 0x07-10 sec. 
+              343                Protocol [8 bits LSB] / 0x00-CA V3,                                        Reserved                              R/W
+                                    0x01-ASCII, 0x02-SOC BAR
+            344-399                                                           Reserved                                                            R/W
+           * Tiny BMS device internally changes these settings min. and max. values according to current sensor used.
+           3.5. Tiny BMS version data
+            Reg. Nr.    0      1       2       3      4       5       6       7         8         9      10      11    12     13     14    15    Action
+              500                   Hardware Version [8 bits LSB]                           Hardware Changes Version [8 bits MSB]                   R
+              501           Public Release Firmware Version [8 bits LSB]           BPT (1 bit)*BCS (2 bits)**             Reserved                  R
+              502                                              Internal Firmware Version [UINT_16]                                                  R
+              503                  Bootloader Version [8 bits LSB]                                 Profile Version [8 bits MSB]                     R
+              504
+              505
+              506                                                 Product Serial Number [96 bits]
+              507                                                                                                                                   R
+              508
+              509
+            510-599                                                           Reserved                                                              R
+           * BPT – BMS Power Type / 0x00-Low Power, 0x01-High Power
+           ** BCS – BMS Current Sensor Used / 0x00-Internal Resistor, 0x01-Internal HALL, 0x02-External
+             www.enepaq.com                                       Revision D, 2025-07-04                                                     Page 25
+                                                                                                              Tiny BMS Communication Protocols
+                         Chapter 4: Tiny BMS Events messages list
+                         4. Introduction
+                         This chapter in detail covers all the Tiny BMS Events messages and its IDs.
+                         4.1. Tiny BMS Fault messages list
+                            Fault ID (0x01 to 0x30)                               Fault message
+                                     0x02              Under-Voltage Cutoff Occurred
+                                     0x03              Over-Voltage Cutoff Occurred
+                                     0x04              Over-Temperature Cutoff Occurred
+                                     0x05              Discharging Over-Current Cutoff Occurred
+                                     0x06              Charging Over-Current Cutoff Occurred
+                                     0x07              Regeneration Over-Current Cutoff Occurred
+                                     0x0A              Low Temperature Cutoff Occurred
+                                     0x0B              Charger Switch Error Detected
+                                     0x0C              Load Switch Error Detected
+                                     0x0D              Single Port Switch Error Detected
+                                     0x0E              External Current Sensor Disconnected (BMS restart required)
+                                     0x0F              External Current Sensor Connected (BMS restart required)
+                         4.2. Tiny BMS Warning messages list
+                          Warning ID (0x31 to 0x60)                             Warning message
+                                     0x31             Fully Discharged Cutoff Occurred
+                                     0x37             Low Temperature Charging Cutoff Occurred
+                                     0x38             Charging Done (Charger voltage too high)
+                                     0x39             Charging Done (Charger voltage too low)
+                         4.3. Tiny BMS Information messages list
+                            Info ID (0x61 to 0x90)                                Info message
+                                     0x61             System Started
+                                     0x62             Charging Started
+                                     0x63             Charging Done
+                                     0x64             Charger Connected
+                                     0x65             Charger Disconnected
+                                     0x66             Dual Port Operation Mode Activated
+                                     0x67             Single Port Operation Mode Activated
+                                     0x73             Recovered From Over-Temperature Fault Condition
+                                     0x74             Recovered From Low Temperature Warning Condition
+                                     0x75             Recovered From Low Temperature Fault Condition
+                                     0x76             Recovered From Charging Over-Current Fault Condition
+                                     0x77             Recovered From Discharging Over-Current Fault Condition
+                                     0x78             Recovered From Regeneration Over-Current Fault Condition
+                                     0x79             Recovered From Over-Voltage Fault Condition
+                                    0x7A              Recovered From Fully Discharged Voltage Warning Condition
+                                    0x7B              Recovered From Under-Voltage Fault Condition
+                                    0x7C              External Current Sensor Connected
+                                    0x7D              External Current Sensor Disconnected
+                         Document revision history
+                          www.enepaq.com                                     Revision D, 2025-07-04                                                 Page 26
+                                                                       Tiny BMS Communication Protocols
+          Revision        Date                                     Description
+             A         2018-07-30    Initial release.
+             B         2018-12-11    Fixed UART command: 1.1.23 Read Tiny BMS calculated speed, left 
+                                     distance and estimated time values.
+             C         2022-03-24    Company rebranded to Enepaq.
+                                     Updated TinyBMS internal register map to reflect latest FW changes: 
+                                     - SOH estimation.
+                                     - Discharge Over-Current Cutoff.
+             D         2025-07-04    - Discharge Over-Current Cutoff Timeout.
+                                     - Discharge Peak-Current Cutoff.
+                                     - Charge Restart Level.
+                                     - Charger Startup Delay.
+                                     - Charger Disable Delay.
+         www.enepaq.com                        Revision D, 2025-07-04                              Page 27

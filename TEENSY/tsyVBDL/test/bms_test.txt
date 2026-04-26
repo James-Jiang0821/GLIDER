@@ -1,0 +1,456 @@
+#include <Arduino.h>
+#include <math.h>
+#include <string.h>
+
+#include "config/constants.hpp"
+#include "config/pin_map.hpp"
+#include "drivers/bms.hpp"
+
+/*
+Physical TinyBMS UART diagnostic harness.
+
+What this does:
+- Sends TinyBMS read commands in a loop.
+- Parses UART responses.
+- Verifies CRC16.
+- Decodes key telemetry.
+- Prints signal quality summary (NO SIGNAL / GOOD / FAIR / POOR).
+
+Copy this into src/main.cpp when testing with real hardware.
+*/
+
+static BmsUart bms({
+  .serial = &Serial2,
+  .baud = BMS_BAUD
+});
+
+static constexpr uint8_t CMD_READ_EVENTS      = 0x11;
+static constexpr uint8_t CMD_PACK_VOLTAGE     = 0x14;
+static constexpr uint8_t CMD_PACK_CURRENT     = 0x15;
+static constexpr uint8_t CMD_MAX_CELL         = 0x16;
+static constexpr uint8_t CMD_MIN_CELL         = 0x17;
+static constexpr uint8_t CMD_ONLINE_STATUS    = 0x18;
+static constexpr uint8_t CMD_TEMPERATURES     = 0x1B;
+
+static constexpr uint8_t kCmds[] = {
+  CMD_PACK_VOLTAGE,
+  CMD_PACK_CURRENT,
+  CMD_MAX_CELL,
+  CMD_MIN_CELL,
+  CMD_ONLINE_STATUS,
+  CMD_TEMPERATURES,
+  CMD_READ_EVENTS
+};
+
+struct Metrics {
+  uint32_t rx_bytes = 0;
+  uint32_t rx_chunks = 0;
+  uint32_t frames_ok = 0;
+  uint32_t frames_crc_fail = 0;
+  uint32_t frames_unknown = 0;
+  uint32_t ack_count = 0;
+  uint32_t nack_count = 0;
+  uint32_t last_valid_frame_ms = 0;
+} m;
+
+struct Latest {
+  bool has_voltage = false;
+  bool has_current = false;
+  bool has_max_cell = false;
+  bool has_min_cell = false;
+  bool has_status = false;
+  bool has_temp = false;
+  bool has_event = false;
+
+  float pack_voltage_v = 0.0f;
+  float pack_current_a = 0.0f;
+  uint16_t max_cell_mv = 0;
+  uint16_t min_cell_mv = 0;
+  uint16_t online_status = 0;
+
+  int16_t internal_temp_dC = 0;
+  int16_t ext1_temp_dC = -32768;
+  int16_t ext2_temp_dC = -32768;
+
+  uint32_t bms_time_s = 0;
+  uint32_t event_time_s = 0;
+  uint8_t last_event_id = 0;
+} latest;
+
+static uint32_t last_resp_ms[256] = {0};
+static uint32_t last_sent_ms[256] = {0};
+
+static uint8_t stream_buf[512];
+static uint16_t stream_len = 0;
+
+static uint8_t cmd_index = 0;
+static uint32_t last_tx_ms = 0;
+static uint32_t last_print_ms = 0;
+static uint32_t last_summary_ms = 0;
+
+static constexpr uint32_t TX_INTERVAL_MS = 140;       // ~7 commands/sec
+static constexpr uint32_t TELEMETRY_PRINT_MS = 1000;
+static constexpr uint32_t SUMMARY_PRINT_MS = 5000;
+static constexpr uint32_t CMD_FRESH_MS = 4000;
+static constexpr uint32_t LINK_STALE_MS = 3000;
+
+uint16_t readU16LE(const uint8_t* p) {
+  return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+int16_t readI16LE(const uint8_t* p) {
+  return (int16_t)readU16LE(p);
+}
+
+uint32_t readU24LE(const uint8_t* p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
+}
+
+uint32_t readU32LE(const uint8_t* p) {
+  return (uint32_t)p[0] |
+         ((uint32_t)p[1] << 8) |
+         ((uint32_t)p[2] << 16) |
+         ((uint32_t)p[3] << 24);
+}
+
+float readFloatLE(const uint8_t* p) {
+  uint32_t raw = readU32LE(p);
+  float out = 0.0f;
+  memcpy(&out, &raw, sizeof(float));
+  return out;
+}
+
+const char* statusName(uint16_t s) {
+  switch (s) {
+    case 0x0091: return "Charging";
+    case 0x0092: return "FullyCharged";
+    case 0x0093: return "Discharging";
+    case 0x0096: return "Regeneration";
+    case 0x0097: return "Idle";
+    case 0x009B: return "Fault";
+    default: return "Unknown";
+  }
+}
+
+void sendCmd(uint8_t cmd) {
+  uint8_t req[4] = {0xAA, cmd, 0x00, 0x00};
+  uint16_t crc = BmsUart::crc16(req, 2);
+  req[2] = (uint8_t)(crc & 0xFFu);
+  req[3] = (uint8_t)((crc >> 8) & 0xFFu);
+
+  bms.write(req, sizeof(req));
+  last_sent_ms[cmd] = millis();
+}
+
+void handleFrame(const uint8_t* f, uint16_t len) {
+  uint32_t now = millis();
+  uint8_t type = f[1];
+
+  m.frames_ok++;
+  m.last_valid_frame_ms = now;
+
+  if (type == 0x01) {
+    // ACK: AA 01 CMD CRCL CRCH
+    m.ack_count++;
+    last_resp_ms[f[2]] = now;
+    return;
+  }
+
+  if (type == 0x00) {
+    // NACK: AA 00 CMD ERR CRCL CRCH
+    m.nack_count++;
+    last_resp_ms[f[2]] = now;
+    Serial.print("NACK cmd=0x");
+    Serial.print(f[2], HEX);
+    Serial.print(" err=0x");
+    Serial.println(f[3], HEX);
+    return;
+  }
+
+  last_resp_ms[type] = now;
+
+  switch (type) {
+    case CMD_PACK_VOLTAGE:
+      if (len == 8) {
+        latest.pack_voltage_v = readFloatLE(&f[2]);
+        latest.has_voltage = true;
+      }
+      break;
+
+    case CMD_PACK_CURRENT:
+      if (len == 8) {
+        latest.pack_current_a = readFloatLE(&f[2]);
+        latest.has_current = true;
+      }
+      break;
+
+    case CMD_MAX_CELL:
+      if (len == 6) {
+        latest.max_cell_mv = readU16LE(&f[2]);
+        latest.has_max_cell = true;
+      }
+      break;
+
+    case CMD_MIN_CELL:
+      if (len == 6) {
+        latest.min_cell_mv = readU16LE(&f[2]);
+        latest.has_min_cell = true;
+      }
+      break;
+
+    case CMD_ONLINE_STATUS:
+      if (len == 6) {
+        latest.online_status = readU16LE(&f[2]);
+        latest.has_status = true;
+      }
+      break;
+
+    case CMD_TEMPERATURES:
+      if (len >= 11) {
+        latest.internal_temp_dC = readI16LE(&f[3]);
+        latest.ext1_temp_dC = readI16LE(&f[5]);
+        latest.ext2_temp_dC = readI16LE(&f[7]);
+        latest.has_temp = true;
+      }
+      break;
+
+    case CMD_READ_EVENTS:
+      // AA 11 PL BTSP(4) [TSP(3)+EVENT(1)]... CRC
+      if (len >= 13) {
+        uint8_t pl = f[2];
+        if (pl >= 8) {
+          latest.bms_time_s = readU32LE(&f[3]);
+
+          // Use first event in payload for quick diagnostics
+          latest.event_time_s = readU24LE(&f[7]);
+          latest.last_event_id = f[10];
+          latest.has_event = true;
+        }
+      }
+      break;
+
+    default:
+      break;
+  }
+}
+
+void parseStream() {
+  while (stream_len >= 5) {
+    // align to 0xAA
+    uint16_t start = 0;
+    while (start < stream_len && stream_buf[start] != 0xAA) {
+      start++;
+    }
+
+    if (start == stream_len) {
+      stream_len = 0;
+      return;
+    }
+
+    if (start > 0) {
+      memmove(stream_buf, stream_buf + start, stream_len - start);
+      stream_len -= start;
+    }
+
+    if (stream_len < 5) {
+      return;
+    }
+
+    uint8_t type = stream_buf[1];
+    uint16_t frame_len = 0;
+
+    if (type == 0x01) frame_len = 5;                 // ACK
+    else if (type == 0x00) frame_len = 6;            // NACK
+    else if (type == CMD_PACK_VOLTAGE ||
+             type == CMD_PACK_CURRENT) frame_len = 8;
+    else if (type == CMD_MAX_CELL ||
+             type == CMD_MIN_CELL ||
+             type == CMD_ONLINE_STATUS) frame_len = 6;
+    else if (type == CMD_TEMPERATURES ||
+             type == CMD_READ_EVENTS) {
+      if (stream_len < 3) return;
+      frame_len = (uint16_t)stream_buf[2] + 5;
+    } else {
+      // Unknown type, shift one byte
+      m.frames_unknown++;
+      memmove(stream_buf, stream_buf + 1, stream_len - 1);
+      stream_len--;
+      continue;
+    }
+
+    if (frame_len < 5) {
+      memmove(stream_buf, stream_buf + 1, stream_len - 1);
+      stream_len--;
+      continue;
+    }
+
+    if (stream_len < frame_len) {
+      return;
+    }
+
+    uint16_t crc_rx = readU16LE(&stream_buf[frame_len - 2]);
+    uint16_t crc_calc = BmsUart::crc16(stream_buf, frame_len - 2);
+
+    if (crc_rx != crc_calc) {
+      m.frames_crc_fail++;
+      memmove(stream_buf, stream_buf + 1, stream_len - 1);
+      stream_len--;
+      continue;
+    }
+
+    handleFrame(stream_buf, frame_len);
+
+    if (frame_len < stream_len) {
+      memmove(stream_buf, stream_buf + frame_len, stream_len - frame_len);
+    }
+    stream_len -= frame_len;
+  }
+}
+
+void pumpRx() {
+  bms.update();
+
+  while (bms.frameAvailable()) {
+    uint8_t chunk[256];
+    uint16_t n = bms.readFrame(chunk, sizeof(chunk));
+    if (n == 0) break;
+
+    m.rx_chunks++;
+    m.rx_bytes += n;
+
+    if (n >= sizeof(stream_buf)) {
+      memcpy(stream_buf, chunk + (n - sizeof(stream_buf)), sizeof(stream_buf));
+      stream_len = sizeof(stream_buf);
+    } else {
+      if ((uint32_t)stream_len + n > sizeof(stream_buf)) {
+        uint16_t overflow = (uint16_t)((uint32_t)stream_len + n - sizeof(stream_buf));
+        if (overflow >= stream_len) {
+          stream_len = 0;
+        } else {
+          memmove(stream_buf, stream_buf + overflow, stream_len - overflow);
+          stream_len -= overflow;
+        }
+      }
+
+      memcpy(stream_buf + stream_len, chunk, n);
+      stream_len += n;
+    }
+
+    parseStream();
+    bms.update();
+  }
+}
+
+void printTelemetry() {
+  Serial.print("V=");
+  if (latest.has_voltage) Serial.print(latest.pack_voltage_v, 3); else Serial.print("NA");
+
+  Serial.print("V  I=");
+  if (latest.has_current) Serial.print(latest.pack_current_a, 3); else Serial.print("NA");
+
+  Serial.print("A  Min=");
+  if (latest.has_min_cell) Serial.print(latest.min_cell_mv); else Serial.print("NA");
+
+  Serial.print("mV  Max=");
+  if (latest.has_max_cell) Serial.print(latest.max_cell_mv); else Serial.print("NA");
+
+  Serial.print("mV  Temp=");
+  if (latest.has_temp) {
+    Serial.print(latest.internal_temp_dC / 10.0f, 1);
+  } else {
+    Serial.print("NA");
+  }
+
+  Serial.print("C  State=");
+  if (latest.has_status) Serial.print(statusName(latest.online_status)); else Serial.print("NA");
+
+  if (latest.has_event) {
+    Serial.print("  Event=0x");
+    Serial.print(latest.last_event_id, HEX);
+  }
+
+  Serial.println();
+}
+
+void printSummary() {
+  uint32_t now = millis();
+  uint32_t checked = m.frames_ok + m.frames_crc_fail;
+  float crc_ok_pct = (checked > 0) ? (100.0f * (float)m.frames_ok / (float)checked) : 0.0f;
+  bool stale_link = (m.last_valid_frame_ms == 0) || (now - m.last_valid_frame_ms > LINK_STALE_MS);
+
+  bool all_fresh = true;
+  for (uint8_t i = 0; i < sizeof(kCmds); i++) {
+    uint8_t cmd = kCmds[i];
+    if ((now - last_resp_ms[cmd]) > CMD_FRESH_MS) {
+      all_fresh = false;
+      break;
+    }
+  }
+
+  const char* quality = "POOR";
+  if (stale_link || m.frames_ok == 0) {
+    quality = "NO SIGNAL";
+  } else if (crc_ok_pct >= 98.0f && all_fresh) {
+    quality = "GOOD";
+  } else if (crc_ok_pct >= 90.0f) {
+    quality = "FAIR";
+  }
+
+  Serial.println();
+  Serial.println("=== BMS UART SIGNAL HEALTH ===");
+  Serial.print("Quality: "); Serial.println(quality);
+  Serial.print("Frames OK: "); Serial.println(m.frames_ok);
+  Serial.print("Frames CRC Fail: "); Serial.println(m.frames_crc_fail);
+  Serial.print("Frames Unknown: "); Serial.println(m.frames_unknown);
+  Serial.print("ACK: "); Serial.print(m.ack_count);
+  Serial.print("  NACK: "); Serial.println(m.nack_count);
+  Serial.print("RX bytes: "); Serial.print(m.rx_bytes);
+  Serial.print("  RX chunks: "); Serial.println(m.rx_chunks);
+  Serial.print("CRC OK rate (%): "); Serial.println(crc_ok_pct, 2);
+  Serial.print("Last valid frame ago (ms): "); Serial.println(now - m.last_valid_frame_ms);
+  Serial.println("==============================");
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1500);
+
+  // Safety: keep motor driver disabled during BMS comm testing
+  pinMode(PIN_MOTOR_SLP, OUTPUT);
+  digitalWrite(PIN_MOTOR_SLP, LOW);
+  pinMode(PIN_MOTOR_PWM, OUTPUT);
+  analogWrite(PIN_MOTOR_PWM, 0);
+
+  Serial.println("TinyBMS physical UART diagnostic starting...");
+  Serial.println("Polling commands: 0x14 0x15 0x16 0x17 0x18 0x1B 0x11");
+
+  bms.begin();
+
+  // Wake-up behavior: first command can be ignored by sleeping BMS, so send twice.
+  sendCmd(CMD_PACK_VOLTAGE);
+  delay(30);
+  sendCmd(CMD_PACK_VOLTAGE);
+}
+
+void loop() {
+  uint32_t now = millis();
+
+  pumpRx();
+
+  if (now - last_tx_ms >= TX_INTERVAL_MS) {
+    last_tx_ms = now;
+    uint8_t cmd = kCmds[cmd_index];
+    sendCmd(cmd);
+    cmd_index = (uint8_t)((cmd_index + 1) % sizeof(kCmds));
+  }
+
+  if (now - last_print_ms >= TELEMETRY_PRINT_MS) {
+    last_print_ms = now;
+    printTelemetry();
+  }
+
+  if (now - last_summary_ms >= SUMMARY_PRINT_MS) {
+    last_summary_ms = now;
+    printSummary();
+  }
+}

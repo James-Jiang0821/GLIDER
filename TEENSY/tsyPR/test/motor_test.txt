@@ -1,0 +1,50 @@
+#include <Arduino.h>
+#include "drivers/stepper_driver.hpp"
+#include "config/pin_map.hpp"
+
+// ===== Pitch Motor =====
+StepperDriver pitch({
+  .pin_step = PIN_PITCH_STEP,
+  .pin_dir  = PIN_PITCH_DIR,
+  .pin_en   = PIN_PITCH_ENA,
+  .pin_flt  = PIN_PITCH_FLT,
+
+  .step_pulse_us = 5.0f,
+  .steps_per_sec = 150.0f,   // lower max speed
+
+  .flt_active_low = true,
+  .en_active_low  = true
+});
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+
+  Serial.println("Stepper Debug Test Start");
+
+  pitch.begin();
+  pitch.enable();
+
+  pitch.setSpeed(3000);  // slower = more reliable
+
+  if (pitch.faultActive()) {
+    Serial.println("WARNING: Pitch fault!");
+  } else {
+    Serial.println("Pitch OK");
+  }
+}
+
+void loop() {
+
+  Serial.println("CW: 5 revolutions");
+  pitch.setDirection(StepperDriver::Direction::CW);
+  pitch.move(2000);   // 5 revs (200 steps * 5)
+
+  delay(500);
+
+  Serial.println("CCW: 5 revolutions");
+  pitch.setDirection(StepperDriver::Direction::CCW);
+  pitch.move(2000);
+
+  delay(500);
+}

@@ -1,0 +1,214 @@
+#include <Arduino.h>
+#include "controllers/safety_manager.hpp"
+#include "config/constants.hpp"
+#include "protocols/can_messages.hpp"
+
+// --------------------------------------------------
+// GLOBAL
+// --------------------------------------------------
+SafetyManager safety;
+
+// --------------------------------------------------
+// SIMPLE ASSERT HELPERS
+// --------------------------------------------------
+void assertTrue(bool condition, const char* msg)
+{
+    if (condition) {
+        Serial.print("[PASS] ");
+    } else {
+        Serial.print("[FAIL] ");
+    }
+    Serial.println(msg);
+}
+
+// --------------------------------------------------
+// INPUT HELPER
+// --------------------------------------------------
+SafetyManager::Inputs makeNominalInputs()
+{
+    SafetyManager::Inputs in{};
+
+    in.tof_valid = true;     // critical
+    in.pos_est_mm = 50.0f;   // safe in-range position
+
+    return in;
+}
+
+// --------------------------------------------------
+// TEST: Leak triggers hard fault (with debounce)
+// --------------------------------------------------
+void test_leak()
+{
+    safety.reset();
+
+    auto in = makeNominalInputs();
+    in.leak_raw = true;
+
+    SafetyManager::Output out{};
+
+    for (int i = 0; i < 10; i++) {
+        out = safety.update(in, 0.01f);
+    }
+
+    assertTrue(out.hard_fault, "Leak triggers hard fault");
+    assertTrue(out.hard_fault_a & can::FAULT_LEAK, "Leak bit set");
+    assertTrue(out.first_hard_fault == 1, "First fault = leak");
+}
+
+// --------------------------------------------------
+// TEST: Overcurrent needs confirm time
+// --------------------------------------------------
+void test_overcurrent()
+{
+    safety.reset();
+
+    auto in = makeNominalInputs();
+    in.motor_current_a = config::OVERCURRENT_HARD_LIMIT_A + 1.0f;
+
+    SafetyManager::Output out{};
+
+    // before confirm
+    out = safety.update(in, 0.1f);
+    assertTrue(!out.hard_fault, "Overcurrent not instant");
+
+    // after confirm
+    for (int i = 0; i < 10; i++) {
+        out = safety.update(in, 0.1f);
+    }
+
+    assertTrue(out.hard_fault, "Overcurrent triggers after delay");
+    assertTrue(out.hard_fault_a & can::FAULT_OVERCURRENT, "Overcurrent bit set");
+}
+
+// --------------------------------------------------
+// TEST: Soft fault clears automatically
+// --------------------------------------------------
+void test_soft_fault()
+{
+    safety.reset();
+
+    auto in = makeNominalInputs();
+    in.cmd_timeout_small = true;
+
+    auto out = safety.update(in, 0.01f);
+    assertTrue(out.soft_fault, "Soft fault active");
+
+    in.cmd_timeout_small = false;
+    out = safety.update(in, 0.01f);
+    assertTrue(!out.soft_fault, "Soft fault clears");
+}
+
+// --------------------------------------------------
+// TEST: Hard fault latches
+// --------------------------------------------------
+void test_latch()
+{
+    safety.reset();
+
+    auto in = makeNominalInputs();
+    in.leak_raw = true;
+
+    auto out = safety.update(in, 0.01f);
+    for (int i = 0; i < 10; i++) {
+        out = safety.update(in, 0.01f);
+    }
+
+    assertTrue(out.hard_fault, "Hard fault triggered");
+
+    // remove condition
+    in.leak_raw = false;
+    for (int i = 0; i < 10; i++) {
+        out = safety.update(in, 0.01f);
+    }
+
+    assertTrue(out.hard_fault, "Hard fault latched");
+}
+
+// --------------------------------------------------
+// TEST: Position limit
+// --------------------------------------------------
+void test_position_limit()
+{
+    safety.reset();
+
+    auto in = makeNominalInputs();
+    in.pos_est_mm = 200.0f; // outside 150mm
+
+    auto out = safety.update(in, 0.01f);
+
+    assertTrue(out.hard_fault, "Position limit fault");
+    assertTrue(out.hard_fault_a & can::FAULT_POS_LIMIT, "Position bit set");
+}
+
+// --------------------------------------------------
+// TEST: Stall detection
+// --------------------------------------------------
+void test_stall()
+{
+    safety.reset();
+
+    auto in = makeNominalInputs();
+    in.motor_enabled = true;
+    in.motor_duty = config::STALL_MIN_DUTY + 0.1f;
+    in.motor_current_a = config::STALL_CURRENT_A + 1.0f;
+    in.pos_est_mm = 50.0f;
+
+    SafetyManager::Output out{};
+
+    for (int i = 0; i < 300; i++) {
+        // no movement → stall
+        out = safety.update(in, 0.01f);
+    }
+
+    assertTrue(out.hard_fault, "Stall detected");
+    assertTrue(out.hard_fault_a & can::FAULT_STALL, "Stall bit set");
+}
+
+// --------------------------------------------------
+// RUN ALL TESTS
+// --------------------------------------------------
+void runTests()
+{
+    Serial.println("\n=== SAFETY MANAGER TESTS ===\n");
+
+    test_leak();
+    test_overcurrent();
+    test_soft_fault();
+    test_latch();
+    test_position_limit();
+    test_stall();
+
+    Serial.println("\n=== TESTS COMPLETE ===\n");
+}
+
+// --------------------------------------------------
+// SETUP
+// --------------------------------------------------
+void setup()
+{
+    Serial.begin(115200);
+    delay(2000);
+
+    safety.configure({
+        .overcurrent_hard_limit_a = config::OVERCURRENT_HARD_LIMIT_A,
+        .overcurrent_confirm_s    = config::OVERCURRENT_CONFIRM_S,
+        .stall_current_a          = config::STALL_CURRENT_A,
+        .stall_min_duty           = config::STALL_MIN_DUTY,
+        .stall_pos_eps_mm         = config::STALL_POS_EPS_MM,
+        .stall_confirm_s          = config::STALL_CONFIRM_S,
+        .bms_temp_confirm_s       = config::BMS_TEMP_CONFIRM_S,
+        .stroke_real_min_mm       = config::STROKE_REAL_MIN_MM,
+        .stroke_real_max_mm       = config::STROKE_REAL_MAX_MM,
+        .leak_debounce_s          = config::LEAK_DEBOUNCE_S,
+        .driver_fault_debounce_s  = config::DRIVER_FAULT_DEBOUNCE_S
+    });
+
+    runTests();
+}
+
+// --------------------------------------------------
+// LOOP (do nothing)
+// --------------------------------------------------
+void loop()
+{
+}

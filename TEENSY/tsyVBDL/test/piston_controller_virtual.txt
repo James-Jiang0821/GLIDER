@@ -1,0 +1,107 @@
+#include <Arduino.h>
+
+#include "controllers/piston_controller.hpp"
+#include "config/constants.hpp"
+
+PistonController piston;
+
+PistonController::Inputs in;
+
+float sim_position = 50.0f;     // start somewhere mid stroke
+float sim_velocity = 0.0f;
+
+bool prox = false;
+
+uint32_t last_print = 0;
+
+void setup()
+{
+    Serial.begin(115200);
+    delay(2000);
+
+    Serial.println("=== PISTON CONTROLLER TEST ===");
+
+    PIDController::Config pid_cfg;
+    pid_cfg.kp = config::PID_KP;
+    pid_cfg.ki = config::PID_KI;
+    pid_cfg.kd = config::PID_KD;
+    pid_cfg.i_limit = config::PID_I_LIMIT;
+    pid_cfg.out_limit = config::PID_OUT_LIMIT;
+
+    piston.configurePID(pid_cfg);
+
+    piston.reset();
+
+    in.pos_est_mm = sim_position;
+    in.vel_est_mm_s = 0.0f;
+
+    in.prox_triggered = false;
+
+    in.cmd_enable = false;
+    in.cmd_home = true;      // start homing
+    in.target_percent = 50;
+
+    in.hard_fault = false;
+    in.soft_fault = false;
+}
+
+void loop()
+{
+    const float dt = config::CONTROL_DT_S;
+
+    in.pos_est_mm = sim_position;
+    in.vel_est_mm_s = sim_velocity;
+    in.prox_triggered = prox;
+
+    auto out = piston.update(in, dt);
+
+    /* simulate piston movement */
+
+    float direction = out.dir_extend ? 1.0f : -1.0f;
+
+    sim_velocity = direction * out.duty * 40.0f; // fake speed model
+    sim_position += sim_velocity * dt;
+
+    /* simulate proximity switch */
+
+    if (sim_position <= 10.0f)
+        prox = true;
+    else
+        prox = false;
+
+    /* after homing enable normal run */
+
+    if (out.state == PistonController::State::RUN)
+    {
+        in.cmd_home = false;
+        in.cmd_enable = true;
+        in.target_percent = 80;   // move piston
+    }
+
+    /* debug output */
+
+    if (millis() - last_print > 100)
+    {
+        last_print = millis();
+
+        Serial.print("STATE: ");
+        Serial.print((int)out.state);
+
+        Serial.print(" POS:");
+        Serial.print(sim_position);
+
+        Serial.print(" TARGET:");
+        Serial.print(out.target_mm);
+
+        Serial.print(" DUTY:");
+        Serial.print(out.duty);
+
+        Serial.print(" DIR:");
+        Serial.print(out.dir_extend);
+
+        Serial.print(" PROX:");
+        Serial.println(prox);
+    }
+
+    delay(1);  // ~1kHz loop
+}

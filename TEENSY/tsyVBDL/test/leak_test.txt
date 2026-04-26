@@ -1,0 +1,27 @@
+#include <Arduino.h>
+#include "config/pin_map.hpp"
+#include "utils/logger.hpp"
+#include "drivers/leak_sensor.hpp"
+
+static LeakSensor leak(PIN_LEAK, true); // Blue Robotics SOS: HIGH = leak
+
+void setup() {
+  logger::begin(115200);
+  LOGI(F("Leak sensor smoke test"));
+
+  // Usually SOS board drives output actively, so INPUT is fine.
+  // If your line floats, switch to begin(true) for INPUT_PULLUP.
+  leak.begin(false);
+}
+
+void loop() {
+  const bool raw = leak.raw();
+  const bool is_leak = leak.isLeak();
+
+  Serial.print("LEAK raw=");
+  Serial.print(raw ? 1 : 0);
+  Serial.print("  detected=");
+  Serial.println(is_leak ? 1 : 0);
+
+  delay(500); // 2 Hz
+}
