@@ -1,0 +1,13 @@
+log_time_ns,topic,type,message
+1774109130558090315,/iridium/status,std_msgs/msg/String,String(data=AT check complete)
+1774109140572751735,/iridium/status,std_msgs/msg/String,String(data=CSQ=1)
+1774109150586388281,/iridium/status,std_msgs/msg/String,String(data=Ran SBDIX session)
+1774109150587353049,/iridium/status,std_msgs/msg/String,String(data=No MT message waiting)
+1774109220557167616,/iridium/status,std_msgs/msg/String,String(data=AT check complete)
+1774109230575395944,/iridium/status,std_msgs/msg/String,String(data=CSQ=2)
+1774109240594427588,/iridium/status,std_msgs/msg/String,String(data=Ran SBDIX session)
+1774109240594761672,/iridium/status,std_msgs/msg/String,String(data=No MT message waiting)
+1774109310557198814,/iridium/status,std_msgs/msg/String,String(data=AT check complete)
+1774109320572405964,/iridium/status,std_msgs/msg/String,String(data=CSQ=5)
+1774109330594200364,/iridium/status,std_msgs/msg/String,String(data=Ran SBDIX session)
+1774109330594266196,/iridium/status,std_msgs/msg/String,String(data=No MT message waiting)

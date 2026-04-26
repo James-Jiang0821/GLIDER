@@ -1,0 +1,12 @@
+timestamp_ns,timestamp_s,stamp_sec,stamp_nanosec,level,name,msg,file,function,line
+1773667680522474063,1773667680.522474,1773667680,374647945,20,rosbag2_recorder,Press SPACE for pausing/resuming,./src/rosbag2_transport/recorder.cpp,RecorderImpl,190
+1773667680522752104,1773667680.522752,1773667680,441648941,20,rosbag2_recorder,Listening for topics...,./src/rosbag2_transport/recorder.cpp,record,353
+1773667680522771496,1773667680.5227714,1773667680,441778460,20,rosbag2_recorder,Event publisher thread: Starting,./src/rosbag2_transport/recorder.cpp,event_publisher_thread_main,371
+1773667680522772533,1773667680.5227726,1773667680,452575257,20,rosbag2_recorder,Subscribed to topic '/rosout',./src/rosbag2_transport/recorder.cpp,subscribe_topic,574
+1773667680522773163,1773667680.5227733,1773667680,458842615,20,rosbag2_recorder,Subscribed to topic '/events/write_split',./src/rosbag2_transport/recorder.cpp,subscribe_topic,574
+1773667680522773792,1773667680.5227737,1773667680,459342892,20,rosbag2_recorder,Recording...,./src/rosbag2_transport/recorder.cpp,record,365
+1773667681704640598,1773667681.7046406,1773667681,704390674,20,rosbag2_recorder,Subscribed to topic '/parameter_events',./src/rosbag2_transport/recorder.cpp,subscribe_topic,574
+1773667682855263066,1773667682.855263,1773667682,854473179,20,rosbag2_recorder,Subscribed to topic '/pressure/depth',./src/rosbag2_transport/recorder.cpp,subscribe_topic,574
+1773667682895683103,1773667682.895683,1773667682,895517895,20,rosbag2_recorder,Subscribed to topic '/pressure/raw_pressure',./src/rosbag2_transport/recorder.cpp,subscribe_topic,574
+1773667682901966970,1773667682.9019668,1773667682,901800669,20,rosbag2_recorder,Subscribed to topic '/pressure/status',./src/rosbag2_transport/recorder.cpp,subscribe_topic,574
+1773667682908472367,1773667682.9084723,1773667682,908310252,20,rosbag2_recorder,Subscribed to topic '/pressure/temperature',./src/rosbag2_transport/recorder.cpp,subscribe_topic,574

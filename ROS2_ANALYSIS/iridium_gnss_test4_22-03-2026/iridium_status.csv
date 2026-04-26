@@ -1,0 +1,41 @@
+topic,log_time_ns,status
+/iridium/status,1774195292743393369,AT check complete
+/iridium/status,1774195295759882895,Could not parse CSQ
+/iridium/status,1774195298772156642,Ran SBDIX session
+/iridium/status,1774195298773256829,No MT message waiting
+/iridium/status,1774195382740683795,AT check complete
+/iridium/status,1774195385755628093,Could not parse CSQ
+/iridium/status,1774195388769421427,Ran SBDIX session
+/iridium/status,1774195388770028092,No MT message waiting
+/iridium/status,1774195472740591324,AT check complete
+/iridium/status,1774195475754626635,Could not parse CSQ
+/iridium/status,1774195478767955279,Ran SBDIX session
+/iridium/status,1774195478768321335,No MT message waiting
+/iridium/status,1774195562743218406,AT check complete
+/iridium/status,1774195565755371911,Could not parse CSQ
+/iridium/status,1774195568767701648,Ran SBDIX session
+/iridium/status,1774195568767976063,No MT message waiting
+/iridium/status,1774195652738500282,AT check complete
+/iridium/status,1774195655753202248,Could not parse CSQ
+/iridium/status,1774195658767505725,Ran SBDIX session
+/iridium/status,1774195658768053947,No MT message waiting
+/iridium/status,1774195742743185549,AT check complete
+/iridium/status,1774195745759546938,Could not parse CSQ
+/iridium/status,1774195748772540823,Ran SBDIX session
+/iridium/status,1774195748772715521,No MT message waiting
+/iridium/status,1774195832742893367,AT check complete
+/iridium/status,1774195835759042172,Could not parse CSQ
+/iridium/status,1774195838773000086,Ran SBDIX session
+/iridium/status,1774195838773594779,No MT message waiting
+/iridium/status,1774195922743210674,AT check complete
+/iridium/status,1774195925756796154,Could not parse CSQ
+/iridium/status,1774195928769466795,Ran SBDIX session
+/iridium/status,1774195928769528110,No MT message waiting
+/iridium/status,1774196012743326915,AT check complete
+/iridium/status,1774196015756231156,CSQ=0
+/iridium/status,1774196018772359823,Ran SBDIX session
+/iridium/status,1774196018772714191,No MT message waiting
+/iridium/status,1774196102743276946,AT check complete
+/iridium/status,1774196105758655308,Could not parse CSQ
+/iridium/status,1774196108771878362,Ran SBDIX session
+/iridium/status,1774196108772486651,No MT message waiting

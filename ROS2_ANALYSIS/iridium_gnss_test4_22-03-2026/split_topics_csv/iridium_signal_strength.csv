@@ -1,0 +1,2 @@
+log_time_ns,topic,type,message
+1774196015755926306,/iridium/signal_strength,std_msgs/msg/String,String(data=0)

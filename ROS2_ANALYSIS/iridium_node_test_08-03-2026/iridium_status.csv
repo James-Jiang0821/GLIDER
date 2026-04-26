@@ -1,0 +1,17 @@
+topic,log_time_ns,status
+/iridium/status,1773083753080504881,AT check complete
+/iridium/status,1773083763099791368,CSQ=5
+/iridium/status,1773083773117538853,Ran SBDIX session
+/iridium/status,1773083783131253511,"Received MT: +SBDRT:
+hello glider"
+/iridium/status,1773083803176458034,Sent MO reply: got it
+/iridium/status,1773083843084136291,AT check complete
+/iridium/status,1773083853097381239,CSQ=1
+/iridium/status,1773083863121685446,Ran SBDIX session
+/iridium/status,1773083863122081682,No MT message waiting
+/iridium/status,1773083933082921999,AT check complete
+/iridium/status,1773083943097198878,CSQ=0
+/iridium/status,1773083953119703346,Ran SBDIX session
+/iridium/status,1773083953120160268,No MT message waiting
+/iridium/status,1773084023080427549,AT check complete
+/iridium/status,1773084033097682998,CSQ=4
