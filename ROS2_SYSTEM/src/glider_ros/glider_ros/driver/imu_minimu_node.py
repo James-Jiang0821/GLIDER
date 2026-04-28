@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MinIMU-9 v5 I2C driver that publishes LSM6DS33 accel+gyro on /imu/data_raw and LIS3MDL mag on /imu/mag."""
+"""MinIMU-9 v6 I2C driver: LSM6DSO accel+gyro on /imu/data_raw, LIS3MDL mag on /imu/mag."""
 import time
 
 import rclpy
@@ -8,13 +8,13 @@ from sensor_msgs.msg import Imu, MagneticField
 
 import board
 import busio
-from adafruit_lsm6ds.lsm6ds33 import LSM6DS33
+from adafruit_lsm6ds.lsm6dsox import LSM6DSOX
 from adafruit_lsm6ds import Rate, AccelRange, GyroRange
 import adafruit_lis3mdl
 
 
 class MinImuNode(Node):
-    """ROS2 driver for the Pololu MinIMU-9 v5 (LSM6DS33 @0x6B accel+gyro, LIS3MDL @0x1E mag) publishing /imu/data_raw and /imu/mag."""
+    """Pololu MinIMU-9 v6 driver (LSM6DSO @0x6B, LIS3MDL @0x1E)."""
 
     def __init__(self):
         super().__init__("minimu_imu_node")
@@ -48,21 +48,20 @@ class MinImuNode(Node):
         self.timer = self.create_timer(period, self._tick)
 
     def _init_sensor(self):
-        self.get_logger().info("Initialising I2C and MinIMU-9 v5...")
+        self.get_logger().info("Initialising I2C and MinIMU-9 v6...")
 
         i2c = busio.I2C(board.SCL, board.SDA)
 
-        #LSM6DS33 on MinIMU-9 v5 sits at 0x6B (not the adafruit default 0x6A)
-        self.lsm = LSM6DS33(i2c, address=0x6B)
+        #MinIMU-9 v6 puts LSM6DSO at 0x6B (adafruit default is 0x6A); LSM6DSOX driver is register-compatible
+        self.lsm = LSM6DSOX(i2c, address=0x6B)
         self.lsm.accelerometer_range = AccelRange.RANGE_4G
         self.lsm.gyro_range = GyroRange.RANGE_500_DPS
         self.lsm.accelerometer_data_rate = Rate.RATE_104_HZ
         self.lsm.gyro_data_rate = Rate.RATE_104_HZ
 
-        #LIS3MDL on MinIMU-9 v5 sits at 0x1E
         self.lis = adafruit_lis3mdl.LIS3MDL(i2c, address=0x1E)
 
-        self.get_logger().info("MinIMU-9 v5 ready")
+        self.get_logger().info("MinIMU-9 v6 ready")
 
     def _tick(self):
         try:
