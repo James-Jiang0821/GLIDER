@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bidirectional CAN bridge between three Teensy 4.0 nodes (P&R ID 3, VBD Left ID 1, VBD Right ID 2) and ROS 2 topics."""
 
+import errno
 import struct
 import threading
 import time
@@ -59,6 +60,14 @@ class CanBridgeNode(Node):
         self.seq_vbd_l = 0
         self.seq_vbd_r = 0
 
+        #TX failure tracking — rate-limit spammy warnings when bus is unhealthy
+        self._tx_warn_throttle_s = 2.0
+        self._last_tx_warn_time = {}
+        self._tx_fail_count = 0
+
+        #bus state tracking — log transitions only, not every poll
+        self._last_bus_state = None
+
         self._setup_pr_interface()
         self._setup_vbd_interface('left', VBD_L)
         self._setup_vbd_interface('right', VBD_R)
@@ -90,6 +99,9 @@ class CanBridgeNode(Node):
 
         rate = self.get_parameter('republish_rate_hz').value
         self.create_timer(1.0 / rate, self._republish_commands)
+
+        #poll bus health at 1 Hz so operator sees ERROR-PASSIVE / BUS-OFF transitions
+        self.create_timer(1.0, self._check_bus_state)
 
         self.get_logger().info('CAN bridge running')
 
@@ -190,8 +202,41 @@ class CanBridgeNode(Node):
         msg = self.can.Message(arbitration_id=can_id, data=data, is_extended_id=False)
         try:
             self.bus.send(msg)
+            self._tx_fail_count = 0
         except Exception as e:
-            self.get_logger().warn(f'CAN TX 0x{can_id:03X} failed: {e}')
+            self._tx_fail_count += 1
+            now = time.monotonic()
+            if now - self._last_tx_warn_time.get(can_id, 0.0) < self._tx_warn_throttle_s:
+                return
+            self._last_tx_warn_time[can_id] = now
+            if getattr(e, 'errno', None) == errno.ENOBUFS:
+                self.get_logger().warn(
+                    f'CAN TX 0x{can_id:03X} ENOBUFS (consecutive fails: {self._tx_fail_count}) — '
+                    f'kernel TX queue full, controller likely BUS-OFF or no ACKing peer. '
+                    f'Check `ip -details -statistics link show can0`.')
+            else:
+                self.get_logger().warn(f'CAN TX 0x{can_id:03X} failed: {e}')
+
+    def _check_bus_state(self):
+        try:
+            state = self.bus.state
+        except (AttributeError, NotImplementedError):
+            return
+        if state == self._last_bus_state:
+            return
+        prev = self._last_bus_state
+        self._last_bus_state = state
+        is_active = (state == self.can.BusState.ACTIVE)
+        if prev is None:
+            line = f'CAN bus state: {state.name}'
+        else:
+            line = f'CAN bus state changed: {prev.name} -> {state.name}'
+        if is_active:
+            self.get_logger().info(line)
+        else:
+            self.get_logger().error(
+                f'{line} — Pi controller unhealthy. If state is ERROR or BUS-OFF, '
+                f'verify `restart-ms` is non-zero on can0 (see `ip -details link show can0`).')
 
     #incoming: CAN frames -> ROS topics
 
