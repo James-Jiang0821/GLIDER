@@ -15,8 +15,7 @@ state_manager_node:
     #Same, but in EMERGENCY state (on surface, controller off)
     emergency_iridium_period_s: 300.0
 
-    #How long to wait for the Iridium modem to settle/acquire signal before
-    #starting a send attempt
+    #How long to wait for the Iridium modem to settle/acquire signal before starting a send attempt
     iridium_settling_time_s: 60.0
 
     #Retries per comm window
@@ -79,6 +78,18 @@ telemetry_adapter_node:
 
     #When a field (e.g. GPS) is unavailable, emit "LAT=UNKNOWN" placeholders
     include_unknown_fields: true
+
+#-----------------------------------------------------------------------------
+#Pressure Keller Node
+#-----------------------------------------------------------------------------
+pressure_keller_node:
+  ros__parameters:
+    #Number of samples averaged at startup (and on /pressure/zero) to fix the
+    #atmospheric reference.
+    surface_zero_samples: 20
+
+    #Manual fudge factor (m) added on top of the tared depth.
+    depth_offset: 0.0
 
 #-----------------------------------------------------------------------------
 #Controller Node

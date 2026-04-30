@@ -8,9 +8,11 @@ from typing import Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy
 
 from sensor_msgs.msg import FluidPressure, Temperature
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 from glider_msgs.msg import Float64Stamped
 
 try:
@@ -167,22 +169,38 @@ class KellerPressureNode(Node):
         self.declare_parameter("publish_rate_hz", 5.0)
         self.declare_parameter("fluid_density", 1029.0)   #seawater
         self.declare_parameter("frame_id", "pressure_link")
+        self.declare_parameter("surface_zero_samples", 20)
+        self.declare_parameter("depth_offset", 0.0)
 
         self.i2c_bus_num = int(self.get_parameter("i2c_bus").value)
         self.i2c_address = int(self.get_parameter("i2c_address").value)
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         self.fluid_density = float(self.get_parameter("fluid_density").value)
         self.frame_id = str(self.get_parameter("frame_id").value)
+        self.surface_zero_samples = int(self.get_parameter("surface_zero_samples").value)
+        self.depth_offset = float(self.get_parameter("depth_offset").value)
+        #reference atmospheric pressure used for depth calculation; overwritten by surface tare
+        self.surface_pressure_pa = 101325.0
 
         self.pressure_pub = self.create_publisher(FluidPressure, "/pressure/raw_pressure", 10)
         self.temperature_pub = self.create_publisher(Temperature, "/pressure/temperature", 10)
         self.depth_pub = self.create_publisher(Float64Stamped, "/pressure/depth", 10)
         self.status_pub = self.create_publisher(String, "/pressure/status", 10)
 
+        #latched so any subscriber (or rosbag) joining late still gets the current calibration value
+        latched_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.surface_ref_pub = self.create_publisher(Float64Stamped, "/pressure/surface_pressure_ref", latched_qos)
+        self._publish_surface_ref()
+
         self.bus: Optional[SMBus] = None
         self.sensor: Optional[KellerLD] = None
 
         self._connect_sensor()
+
+        if self.sensor is not None and self.surface_zero_samples > 0:
+            self._tare_surface_pressure(self.surface_zero_samples)
+
+        self.zero_srv = self.create_service(Trigger, "/pressure/zero", self._handle_zero_request)
 
         period = 1.0 / self.publish_rate_hz if self.publish_rate_hz > 0.0 else 0.2
         self.timer = self.create_timer(period, self.timer_callback)
@@ -191,6 +209,13 @@ class KellerPressureNode(Node):
         msg = String()
         msg.data = text
         self.status_pub.publish(msg)
+
+    def _publish_surface_ref(self) -> None:
+        msg = Float64Stamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.frame_id
+        msg.data = self.surface_pressure_pa
+        self.surface_ref_pub.publish(msg)
 
     def _connect_sensor(self) -> None:
         if SMBus is None:
@@ -226,12 +251,45 @@ class KellerPressureNode(Node):
             self.get_logger().error(f"Failed to initialize pressure sensor: {exc}")
             self.publish_status(f"init_failed: {exc}")
 
+    def _tare_surface_pressure(self, n: int) -> Optional[float]:
+        if self.sensor is None:
+            return None
+        samples = []
+        for _ in range(n):
+            try:
+                pressure_pa, _, _ = self.sensor.read()
+                samples.append(pressure_pa)
+            except Exception as exc:
+                self.get_logger().warn(f"tare sample failed: {exc}")
+            time.sleep(0.05)
+        if not samples:
+            self.publish_status("tare_failed: no valid samples")
+            return None
+        self.surface_pressure_pa = sum(samples) / len(samples)
+        self._publish_surface_ref()
+        info = f"surface tare: {self.surface_pressure_pa:.1f} Pa over {len(samples)} samples"
+        self.get_logger().info(info)
+        self.publish_status(info)
+        return self.surface_pressure_pa
+
+    def _handle_zero_request(self, request, response):
+        n = self.surface_zero_samples if self.surface_zero_samples > 0 else 20
+        result = self._tare_surface_pressure(n)
+        if result is None:
+            response.success = False
+            response.message = "tare failed: sensor unavailable or no samples"
+        else:
+            response.success = True
+            response.message = f"surface_pressure_pa={result:.1f}"
+        return response
+
     def timer_callback(self) -> None:
         if self.sensor is None:
             return
 
         try:
-            pressure_pa, temp_c, depth_m = self.sensor.read()
+            pressure_pa, temp_c, _ = self.sensor.read()
+            depth_m = (pressure_pa - self.surface_pressure_pa) / (self.fluid_density * 9.80665) + self.depth_offset
 
             now = self.get_clock().now().to_msg()
 

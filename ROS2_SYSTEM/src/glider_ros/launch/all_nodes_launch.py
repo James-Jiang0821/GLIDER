@@ -46,6 +46,7 @@ def generate_launch_description():
             package='glider_ros',
             executable='pressure_keller_node',
             name='pressure_keller_node',
+            parameters=[glider_params],
             output='screen'
         ),
 
