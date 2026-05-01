@@ -92,6 +92,35 @@ pressure_keller_node:
     depth_offset: 0.0
 
 #-----------------------------------------------------------------------------
+#Mission Node
+#-----------------------------------------------------------------------------
+mission_node:
+  ros__parameters:
+    #"mission" (depth supervisor) or "static" (publish yaml setpoints)
+    mode: "mission"
+
+    #set true by state_manager when an Iridium mission arrives, self-clears at depth_upper
+    mission_active: false
+
+    #static-mode setpoints
+    pitch_setpoint: 0.0     #rad
+    roll_setpoint: 0.0      #rad
+    vbd_setpoint: 50.0      #percent
+
+    #mission-mode supervisor parameters
+    depth_upper: 1.0        #climb to complete trigger (m)
+    depth_lower: 5.0        #dive to climb trigger (m), overridden per mission via param service
+    alpha_dive: 0.08726646  #5 deg nose-down (rad)
+    alpha_rise: -0.08726646 #5 deg nose-up (rad)
+
+    #setpoint smoothing time constants (mission mode only)
+    T_alpha_cmd: 2.0
+    T_vbd_cmd: 5.0
+
+    #publish rate
+    publish_rate_hz: 10.0
+
+#-----------------------------------------------------------------------------
 #Controller Node
 #-----------------------------------------------------------------------------
 controller_node:
@@ -129,17 +158,6 @@ controller_node:
     #Roll constraint (rad)
     roll_max_rad: 1.5707963  #pi/2
 
-    #Depth targets (m)
-    depth_upper: 1.0
-    depth_lower: 5.0
-
-    #Pitch angle commands (rad)
-    alpha_dive: 0.08726646   #~5 deg nose-down
-    alpha_rise: -0.08726646  #~5 deg nose-up
-
-    #First-order filter time constants (s)
-    T_alpha_cmd: 2.0
-    T_shift_trim: 5.0
-    T_vbd_cmd: 5.0
+    #Output filter time constants (s)
     shift_cmd_tau: 0.01
     roll_cmd_tau: 5.0

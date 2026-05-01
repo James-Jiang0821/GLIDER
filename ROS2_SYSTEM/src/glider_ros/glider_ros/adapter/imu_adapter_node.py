@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""IMU adapter that computes roll, pitch, heading, and angular rates from MinIMU-9 v5 raw outputs."""
+"""IMU adapter: computes roll, pitch, heading, and angular rates from MinIMU-9 v6 raw outputs"""
 
 import math
 
@@ -23,11 +23,11 @@ class ImuAdapterNode(Node):
         self._roll_rate_pub = self.create_publisher(Float64Stamped, "/glider/roll_rate_rad_s", 20)
         self._heading_pub = self.create_publisher(Float64Stamped, "/glider/heading_deg", 20)
 
-        #degree versions for inspection via `ros2 topic echo`
+        #degree versions for ros2 topic echo
         self._roll_deg_pub = self.create_publisher(Float64Stamped, "/glider/roll_deg", 20)
         self._pitch_deg_pub = self.create_publisher(Float64Stamped, "/glider/pitch_deg", 20)
 
-        #latest magnetometer sample cached between IMU ticks
+        #cached mag sample between IMU ticks
         self._mag = None  #(mx, my, mz) in Tesla
 
     def _on_mag(self, msg: MagneticField) -> None:
@@ -42,11 +42,12 @@ class ImuAdapterNode(Node):
         ay = msg.linear_acceleration.y
         az = msg.linear_acceleration.z
 
-        #roll and pitch from the gravity vector
-        roll = math.atan2(ay, az)
-        pitch = math.atan2(-ax, math.sqrt(ay * ay + az * az))
+        #roll and pitch from gravity vector
+        #IMU mounted flat: X_imu=body-right, Y_imu=body-forward, Z_imu=body-up
+        roll = math.atan2(-ax, az)
+        pitch = math.atan2(-ay, math.sqrt(ax * ax + az * az))
 
-        #tilt-compensated magnetic heading (only published if we have a mag sample)
+        #tilt-compensated heading (only if mag sample exists)
         if self._mag is not None:
             mx, my, mz = self._mag
             cr, sr = math.cos(roll), math.sin(roll)
@@ -58,8 +59,8 @@ class ImuAdapterNode(Node):
         else:
             heading_deg = None
 
-        roll_rate = msg.angular_velocity.x
-        pitch_rate = msg.angular_velocity.y
+        roll_rate = msg.angular_velocity.y
+        pitch_rate = -msg.angular_velocity.x
 
         stamp = msg.header.stamp
 

@@ -40,23 +40,23 @@ class InitialisePhase(Enum):
 
 class OperationPhase(Enum):
     CONFIGURING_CONTROLLER = auto()
-    SETTING_DEPTH_PARAM = auto()
     ACTIVATING_CONTROLLER = auto()
+    STARTING_MISSION = auto()
     RUNNING = auto()
     DEACTIVATING_CONTROLLER = auto()
     CLEANING_UP_CONTROLLER = auto()
 
 
 class EmergencyPhase(Enum):
-    CHECKING_DEPTH = auto()               #decide: underwater or surface?
-    SURFACING = auto()                    #force controller to climb wait for COMPLETE
-    DEACTIVATING_CONTROLLER = auto()      #stop the controller lifecycle node
-    CLEANING_UP_CONTROLLER = auto()       #cleanup the controller lifecycle node
-    SAFE_WAITING_FOR_TIMER = auto()       #on surface controller off — wait before Iridium
-    SAFE_ACTIVATING_IRIDIUM = auto()      #configure Iridium lifecycle node
-    SAFE_SENDING_WINDOW_GOAL = auto()     #send SBDWT-only window goal
-    SAFE_WAITING_FOR_WINDOW_RESULT = auto()  #waiting for action result
-    SAFE_DEACTIVATING_IRIDIUM = auto()    #cleanup Iridium then loop back to timer
+    CHECKING_DEPTH = auto()
+    SURFACING = auto()
+    DEACTIVATING_CONTROLLER = auto()
+    CLEANING_UP_CONTROLLER = auto()
+    SAFE_WAITING_FOR_TIMER = auto()
+    SAFE_ACTIVATING_IRIDIUM = auto()
+    SAFE_SENDING_WINDOW_GOAL = auto()
+    SAFE_WAITING_FOR_WINDOW_RESULT = auto()
+    SAFE_DEACTIVATING_IRIDIUM = auto()
 
 
 class StateManagerNode(Node):
@@ -72,8 +72,8 @@ class StateManagerNode(Node):
         self.operation_phase = OperationPhase.CONFIGURING_CONTROLLER
         self.emergency_phase = EmergencyPhase.CHECKING_DEPTH
 
-        #parameters — edit values in config/glider_params.yaml; defaults here are fallbacks
-        self.declare_parameter("idle_iridium_period_s", 100.0)    #testing value ~1.7 min; production target TBD
+        #parameters, defaults overridden by glider_params.yaml
+        self.declare_parameter("idle_iridium_period_s", 100.0)
         self.declare_parameter("emergency_iridium_period_s", 300.0)  #5 min
         self.declare_parameter("iridium_settling_time_s", 60.0)
         self.declare_parameter("iridium_max_attempts", 3)
@@ -101,16 +101,15 @@ class StateManagerNode(Node):
         self.emergency_triggered = False
         self.home_goal_in_flight = False
         self.controller_complete = False
-        self._controller_active = False  #True only while in OPERATION RUNNING phase
-        self._current_depth = 0.0        #latest reading from /pressure/depth
+        self._controller_active = False
+        self._current_depth = 0.0
 
-        #handle to the in-flight home goal so we can cancel it on EMERGENCY (leaving it running would fight surfacing logic)
         self._home_goal_handle = None
 
         #async futures
-        self._iridium_lc_future = None   #Iridium lifecycle transitions
-        self._ctrl_lc_future = None      #controller lifecycle transitions
-        self._param_future = None        #controller parameter set
+        self._iridium_lc_future = None
+        self._ctrl_lc_future = None
+        self._param_future = None
 
         #publishers
         self.state_pub = self.create_publisher(String, "/manager/state", 10)
@@ -135,9 +134,8 @@ class StateManagerNode(Node):
         self._ctrl_lc_client = self.create_client(
             ChangeState, "/controller_node/change_state")
 
-        #parameter service client (controller)
         self._param_client = self.create_client(
-            SetParameters, "/controller_node/set_parameters")
+            SetParameters, "/mission_node/set_parameters")
 
         #main loop
         self.timer = self.create_timer(0.2, self.step)
@@ -161,11 +159,11 @@ class StateManagerNode(Node):
     def _mission_inject_cb(self, msg: Float64):
         if self.state != MissionState.IDLE:
             self.get_logger().warn(
-                f"Mission inject ignored — not in IDLE (current state: {self.state.name})")
+                f"Mission inject ignored, not in IDLE (current state: {self.state.name})")
             return
         self.pending_mission_depth = float(msg.data)
         self.get_logger().info(
-            f"Mission injected directly: depth={msg.data}m — skipping Iridium, proceeding to INITIALISE")
+            f"Mission injected directly: depth={msg.data}m, skipping Iridium, proceeding to INITIALISE")
         self.initialise_phase = InitialisePhase.SENDING_HOME_GOAL
         self.transition_to(MissionState.INITIALISE)
 
@@ -202,7 +200,7 @@ class StateManagerNode(Node):
     #Iridium lifecycle helpers
 
     def activate_iridium(self) -> Optional[bool]:
-        """Configure Iridium lifecycle node (unconfigured → inactive)."""
+        """Configure Iridium lifecycle node from unconfigured to inactive."""
         if self._iridium_lc_future is None:
             if not self._iridium_lc_client.service_is_ready():
                 self.get_logger().warn("Iridium lifecycle service not ready; will retry")
@@ -228,7 +226,7 @@ class StateManagerNode(Node):
         return True
 
     def deactivate_iridium(self) -> Optional[bool]:
-        """Cleanup Iridium lifecycle node (inactive → unconfigured)."""
+        """Cleanup Iridium lifecycle node from inactive to unconfigured."""
         if self._iridium_lc_future is None:
             if not self._iridium_lc_client.service_is_ready():
                 self.get_logger().warn(
@@ -252,7 +250,7 @@ class StateManagerNode(Node):
         else:
             self.get_logger().info("Iridium node cleaned up")
 
-        return True  #non-critical — always proceed
+        return True  #non-critical, always proceed
 
     #controller lifecycle helpers
 
@@ -305,21 +303,29 @@ class StateManagerNode(Node):
             self.get_logger().info("Controller cleaned up")
         return result
 
-    def set_controller_depth(self, depth_m: float) -> Optional[bool]:
-        """Set depth_lower on the controller via parameter service."""
+    def set_mission_params(self, depth_m: float) -> Optional[bool]:
+        """Set depth_lower and mission_active=true on mission_node to start the supervisor."""
         if self._param_future is None:
             if not self._param_client.service_is_ready():
                 self.get_logger().warn(
-                    "Controller parameter service not ready; will retry")
+                    "mission_node parameter service not ready; will retry")
                 return False
-            pv = ParameterValue()
-            pv.type = ParameterType.PARAMETER_DOUBLE
-            pv.double_value = depth_m
-            p = Parameter()
-            p.name = 'depth_lower'
-            p.value = pv
+            pv_depth = ParameterValue()
+            pv_depth.type = ParameterType.PARAMETER_DOUBLE
+            pv_depth.double_value = depth_m
+            p_depth = Parameter()
+            p_depth.name = 'depth_lower'
+            p_depth.value = pv_depth
+
+            pv_active = ParameterValue()
+            pv_active.type = ParameterType.PARAMETER_BOOL
+            pv_active.bool_value = True
+            p_active = Parameter()
+            p_active.name = 'mission_active'
+            p_active.value = pv_active
+
             req = SetParameters.Request()
-            req.parameters = [p]
+            req.parameters = [p_depth, p_active]
             self._param_future = self._param_client.call_async(req)
             return None
 
@@ -330,10 +336,11 @@ class StateManagerNode(Node):
         self._param_future = None
 
         if result is None or not all(r.successful for r in result.results):
-            self.get_logger().warn("Failed to set depth_lower on controller")
+            self.get_logger().warn("Failed to start mission on mission_node")
             return False
 
-        self.get_logger().info(f"Controller depth_lower set to {depth_m}m")
+        self.get_logger().info(
+            f"Mission started on mission_node (depth_lower={depth_m}m, mission_active=true)")
         return True
 
     #Iridium action helpers
@@ -374,7 +381,6 @@ class StateManagerNode(Node):
         if not goal_handle.accepted:
             self.get_logger().warn("/iridium/run_window goal rejected")
             self.iridium_goal_in_flight = False
-            #an EMERGENCY between send and rejection is routing through handle_emergency(); do not overwrite its sub-phase
             if self.state == MissionState.IDLE:
                 self.idle_phase = IdlePhase.DEACTIVATING_IRIDIUM
             elif self.state == MissionState.EMERGENCY and \
@@ -393,13 +399,11 @@ class StateManagerNode(Node):
 
         self.iridium_goal_in_flight = False
 
-        #if in EMERGENCY only the SAFE_* path may advance; returning here prevents mission_received latching during emergency
         if self.state == MissionState.EMERGENCY and \
                 self.emergency_phase != EmergencyPhase.SAFE_WAITING_FOR_WINDOW_RESULT:
             return
 
         if self.state == MissionState.EMERGENCY:
-            #emergency window — SBDWT only no mission processing loop back
             if status == GoalStatus.STATUS_SUCCEEDED:
                 self.get_logger().info(
                     f"Emergency Iridium window done: window_success={result.window_success}, "
@@ -410,7 +414,6 @@ class StateManagerNode(Node):
             self.emergency_phase = EmergencyPhase.SAFE_DEACTIVATING_IRIDIUM
             return
 
-        #IDLE window — normal mission-reading path
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info(
                 f"/iridium/run_window completed: window_success={result.window_success}, "
@@ -425,13 +428,12 @@ class StateManagerNode(Node):
                 try:
                     self.pending_mission_depth = float(result.mission_text.strip())
                     self.get_logger().info(
-                        f"Mission received from Iridium: depth={self.pending_mission_depth}m"
-                        " — deactivating Iridium before homing"
+                        f"Mission received from Iridium: depth={self.pending_mission_depth}m, "
+                        "deactivating Iridium before homing"
                     )
                 except ValueError:
                     self.get_logger().warn(
-                        f"Iridium mission payload not a number: '{result.mission_text}'"
-                        " — ignoring"
+                        f"Iridium mission payload not a number: '{result.mission_text}', ignoring"
                     )
             else:
                 self.get_logger().info("No mission received; remaining in IDLE")
@@ -476,7 +478,6 @@ class StateManagerNode(Node):
             self.get_logger().error("/bridge/home_actuators goal rejected")
             self.home_goal_in_flight = False
             self._home_goal_handle = None
-            #if EMERGENCY fired between send and rejection do not clobber it with another transition or detail
             if self.state == MissionState.EMERGENCY:
                 return
             self._publish_emergency_detail("Homing failed: action goal rejected by bridge")
@@ -502,7 +503,6 @@ class StateManagerNode(Node):
             f"result.success={getattr(result, 'success', None)}, "
             f"result.status_message={getattr(result, 'status_message', None)!r}")
 
-        #if EMERGENCY fired during homing the state machine is in handle_emergency(); never flip back to OPERATION or re-assert EMERGENCY here
         if self.state == MissionState.EMERGENCY:
             return
 
@@ -517,7 +517,7 @@ class StateManagerNode(Node):
             self.transition_to(MissionState.EMERGENCY)
 
     def _cancel_home_goal_if_pending(self):
-        """Fire-and-forget cancel of the in-flight home goal (result callback guard absorbs it)."""
+        """Fire-and-forget cancel. The EMERGENCY guard in home_result_callback absorbs the late result."""
         handle = self._home_goal_handle
         if handle is None:
             return
@@ -562,7 +562,7 @@ class StateManagerNode(Node):
             result = self.deactivate_iridium()
             if result is True:
                 if self.pending_mission_depth is not None:
-                    #mission waiting — proceed to homing
+                    #mission waiting, proceed to homing
                     self.initialise_phase = InitialisePhase.SENDING_HOME_GOAL
                     self.transition_to(MissionState.INITIALISE)
                 else:
@@ -579,31 +579,32 @@ class StateManagerNode(Node):
         if self.operation_phase == OperationPhase.CONFIGURING_CONTROLLER:
             result = self.configure_controller()
             if result is True:
-                self.operation_phase = OperationPhase.SETTING_DEPTH_PARAM
-            #False = service not ready stay and retry; None = waiting
-
-        elif self.operation_phase == OperationPhase.SETTING_DEPTH_PARAM:
-            if self.pending_mission_depth is None:
-                detail = "No pending mission depth in SETTING_DEPTH_PARAM"
-                self.get_logger().error(f"{detail}; going to EMERGENCY")
-                self._publish_emergency_detail(detail)
-                self.transition_to(MissionState.EMERGENCY)
-                return
-            result = self.set_controller_depth(self.pending_mission_depth)
-            if result is True:
                 self.operation_phase = OperationPhase.ACTIVATING_CONTROLLER
-            #False = service not ready stay and retry; None = waiting
+            #False means service not ready, retry. None means waiting
 
         elif self.operation_phase == OperationPhase.ACTIVATING_CONTROLLER:
+            #activate controller before starting the mission so it is subscribed to /mission/* topics
             result = self.activate_controller()
             if result is True:
                 self.controller_complete = False
                 self._controller_active = True
-                self.operation_phase = OperationPhase.RUNNING
+                self.operation_phase = OperationPhase.STARTING_MISSION
             elif result is False:
                 self.get_logger().error("Failed to activate controller; going to EMERGENCY")
                 self._publish_emergency_detail("Controller activation failed")
                 self.transition_to(MissionState.EMERGENCY)
+
+        elif self.operation_phase == OperationPhase.STARTING_MISSION:
+            if self.pending_mission_depth is None:
+                detail = "No pending mission depth in STARTING_MISSION"
+                self.get_logger().error(f"{detail}; going to EMERGENCY")
+                self._publish_emergency_detail(detail)
+                self.transition_to(MissionState.EMERGENCY)
+                return
+            result = self.set_mission_params(self.pending_mission_depth)
+            if result is True:
+                self.operation_phase = OperationPhase.RUNNING
+            #False means service not ready, retry. None means waiting
 
         elif self.operation_phase == OperationPhase.RUNNING:
             if self.controller_complete:
@@ -613,7 +614,7 @@ class StateManagerNode(Node):
             result = self.deactivate_controller()
             if result is True:
                 self.operation_phase = OperationPhase.CLEANING_UP_CONTROLLER
-            #None = waiting; False = service gone also move on
+            #None means waiting. False means service gone, also move on
 
         elif self.operation_phase == OperationPhase.CLEANING_UP_CONTROLLER:
             result = self.cleanup_controller()
@@ -631,11 +632,11 @@ class StateManagerNode(Node):
             underwater = self._current_depth > self.surface_depth_m
             if underwater:
                 self.get_logger().error(
-                    f"EMERGENCY: glider is underwater ({self._current_depth:.2f}m) — forcing surface")
+                    f"EMERGENCY: glider is underwater ({self._current_depth:.2f}m), forcing surface")
                 self.emergency_phase = EmergencyPhase.SURFACING
             else:
                 self.get_logger().error(
-                    f"EMERGENCY: glider is on surface ({self._current_depth:.2f}m) — "
+                    f"EMERGENCY: glider is on surface ({self._current_depth:.2f}m), "
                     + ("deactivating controller" if self._controller_active else "entering safe hold"))
                 if self._controller_active:
                     self.emergency_phase = EmergencyPhase.DEACTIVATING_CONTROLLER
@@ -649,7 +650,7 @@ class StateManagerNode(Node):
             self._force_surface_pub.publish(msg)
 
             if self.controller_complete:
-                self.get_logger().error("EMERGENCY: glider has surfaced — deactivating controller")
+                self.get_logger().error("EMERGENCY: glider has surfaced, deactivating controller")
                 self.controller_complete = False
                 self.emergency_phase = EmergencyPhase.DEACTIVATING_CONTROLLER
 
@@ -662,13 +663,15 @@ class StateManagerNode(Node):
             result = self.cleanup_controller()
             if result is True:
                 self._controller_active = False
-                self.get_logger().error("EMERGENCY: controller off — entering safe hold")
+                self.pending_mission_depth = None
+                self.controller_complete = False
+                self.get_logger().error("EMERGENCY: controller off, entering safe hold")
                 self.reset_emergency_iridium_timer()
                 self.emergency_phase = EmergencyPhase.SAFE_WAITING_FOR_TIMER
 
         elif self.emergency_phase == EmergencyPhase.SAFE_WAITING_FOR_TIMER:
             if self.emergency_iridium_timer_elapsed():
-                self.get_logger().info("EMERGENCY: Iridium timer elapsed — opening comms")
+                self.get_logger().info("EMERGENCY: Iridium timer elapsed, opening comms")
                 self.emergency_phase = EmergencyPhase.SAFE_ACTIVATING_IRIDIUM
 
         elif self.emergency_phase == EmergencyPhase.SAFE_ACTIVATING_IRIDIUM:
