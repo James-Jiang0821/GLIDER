@@ -310,9 +310,9 @@ class CanBridgeNode(Node):
         b4 = d[4]
         seq = d[6]
 
-        #VBD pos is 0-1500 representing 0-150.0mm
-        self._pub_f64(getattr(self, f'pub_vbd_{side}_pos_mm'), pos_raw / 10.0)
-        self._pub_f64(getattr(self, f'pub_vbd_{side}_tof_mm'), tof_raw / 10.0)
+        #VBD pos wire units are 0.01 mm/LSB (firmware multiplies by 100); ToF wire units are mm/LSB
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_pos_mm'), pos_raw / 100.0)
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_tof_mm'), float(tof_raw))
 
         #VBD: leak is byte 4 bit 1
         leak = bool(b4 & 0x02)
