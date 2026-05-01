@@ -57,6 +57,8 @@ setup(
             'safety_node = glider_ros.safety.safety_node:main',
             # Controller
             'controller_node = glider_ros.controller.controller_node:main',
+            # Mission
+            'mission_node = glider_ros.mission.mission_node:main',
         ],
     },
 )

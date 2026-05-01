@@ -1,11 +1,16 @@
-"""Launches the full glider node graph: 
-drivers, adapters, safety, and controller
+"""Launches the full glider node graph:
+drivers, adapters, safety, mission, and controller
 no bridge and state manager
+
+Launch arg:
+    mode: "mission" (default, lake) or "static" (tank, mission_node publishes yaml setpoints, no supervisor)
 """
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import LifecycleNode, Node
 
 
@@ -15,7 +20,14 @@ def generate_launch_description():
         'config', 'glider_params.yaml'
     )
 
+    mode_arg = DeclareLaunchArgument(
+        'mode',
+        default_value='mission',
+        description='mission_node mode: "mission" (lake) or "static" (tank)'
+    )
+
     return LaunchDescription([
+        mode_arg,
         #--- Drivers ---
         Node(
             package='glider_ros',
@@ -78,6 +90,18 @@ def generate_launch_description():
             executable='safety_node',
             name='safety_node',
             parameters=[glider_params],
+            output='screen'
+        ),
+
+        #--- Mission ---
+        Node(
+            package='glider_ros',
+            executable='mission_node',
+            name='mission_node',
+            parameters=[
+                glider_params,
+                {'mode': LaunchConfiguration('mode')}
+            ],
             output='screen'
         ),
 
