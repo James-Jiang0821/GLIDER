@@ -91,6 +91,9 @@ pressure_keller_node:
     #Manual fudge factor (m) added on top of the tared depth.
     depth_offset: 0.0
 
+    #fresh water around 1000, sea water around 1029 kg/m^3
+    fluid_density: 1000.0
+
 #-----------------------------------------------------------------------------
 #Mission Node
 #-----------------------------------------------------------------------------
