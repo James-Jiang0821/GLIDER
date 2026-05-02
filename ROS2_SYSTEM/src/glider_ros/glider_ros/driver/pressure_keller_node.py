@@ -197,6 +197,7 @@ class KellerPressureNode(Node):
 
         self._connect_sensor()
 
+        #surface tare only at boot — never on reconnect, in case we're underwater
         if self.sensor is not None and self.surface_zero_samples > 0:
             self._tare_surface_pressure(self.surface_zero_samples)
 
@@ -217,12 +218,23 @@ class KellerPressureNode(Node):
         msg.data = self.surface_pressure_pa
         self.surface_ref_pub.publish(msg)
 
+    def _close_bus(self) -> None:
+        if self.bus is not None:
+            try:
+                self.bus.close()
+            except Exception:
+                pass
+        self.bus = None
+        self.sensor = None
+
     def _connect_sensor(self) -> None:
         if SMBus is None:
             err = "python package 'smbus2' is not installed"
             self.get_logger().error(err)
             self.publish_status(err)
             return
+
+        self._close_bus()
 
         try:
             self.bus = SMBus(self.i2c_bus_num)
@@ -247,8 +259,8 @@ class KellerPressureNode(Node):
             self.publish_status(info)
 
         except Exception as exc:
-            self.sensor = None
-            self.get_logger().error(f"Failed to initialize pressure sensor: {exc}")
+            self._close_bus()
+            self.get_logger().warn(f"Failed to initialize pressure sensor: {exc}")
             self.publish_status(f"init_failed: {exc}")
 
     def _tare_surface_pressure(self, n: int) -> Optional[float]:
@@ -285,7 +297,9 @@ class KellerPressureNode(Node):
 
     def timer_callback(self) -> None:
         if self.sensor is None:
-            return
+            self._connect_sensor()
+            if self.sensor is None:
+                return
 
         try:
             pressure_pa, temp_c, _ = self.sensor.read()
@@ -315,8 +329,9 @@ class KellerPressureNode(Node):
             self.depth_pub.publish(depth_msg)
 
         except Exception as exc:
-            self.get_logger().error(f"Pressure read failed: {exc}")
+            self.get_logger().warn(f"Pressure read failed, will reconnect: {exc}")
             self.publish_status(f"read_failed: {exc}")
+            self._close_bus()
 
 
 def main(args=None):
@@ -327,11 +342,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if node.bus is not None:
-            try:
-                node.bus.close()
-            except Exception:
-                pass
+        node._close_bus()
         node.destroy_node()
         rclpy.shutdown()
 
