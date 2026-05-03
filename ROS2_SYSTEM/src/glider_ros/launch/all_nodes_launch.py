@@ -3,7 +3,7 @@ drivers, adapters, safety, mission, and controller
 no bridge and state manager
 
 Launch arg:
-    mode: "mission" (default, lake) or "static" (tank, mission_node publishes yaml setpoints, no supervisor)
+    mode: mission (default, lake) or static (tank, mission_node publishes yaml setpoints, no supervisor)
 """
 import os
 
@@ -33,6 +33,7 @@ def generate_launch_description():
             package='glider_ros',
             executable='imu_minimu_node',
             name='imu_minimu_node',
+            parameters=[glider_params],
             output='screen'
         ),
         Node(
@@ -67,6 +68,7 @@ def generate_launch_description():
             package='glider_ros',
             executable='imu_adapter_node',
             name='imu_adapter_node',
+            parameters=[glider_params],
             output='screen'
         ),
         Node(

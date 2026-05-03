@@ -95,6 +95,28 @@ pressure_keller_node:
     fluid_density: 1000.0
 
 #-----------------------------------------------------------------------------
+#IMU MinIMU-9 Driver Node
+#-----------------------------------------------------------------------------
+imu_minimu_node:
+  ros__parameters:
+    #Stationary samples averaged at startup (and on /imu/gyro_zero) to fix gyro bias.
+    gyro_bias_samples: 250
+
+    #Per-axis variance ceiling (rad^2/s^2); exceeded -> motion assumed, cal restarts.
+    gyro_bias_max_var: 0.001
+
+    gyro_publish_during_cal: false
+
+#-----------------------------------------------------------------------------
+#IMU Adapter Node
+#-----------------------------------------------------------------------------
+imu_adapter_node:
+  ros__parameters:
+    #Measured once on a level surface; subtracted from raw roll/pitch.
+    mount_pitch_offset_rad: 0.0
+    mount_roll_offset_rad: 0.0
+
+#-----------------------------------------------------------------------------
 #Mission Node
 #-----------------------------------------------------------------------------
 mission_node:

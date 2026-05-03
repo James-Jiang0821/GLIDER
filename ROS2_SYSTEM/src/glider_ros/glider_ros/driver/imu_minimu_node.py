@@ -5,6 +5,9 @@ import time
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, MagneticField
+from std_srvs.srv import Trigger
+
+import numpy as np
 
 import board
 import busio
@@ -26,14 +29,28 @@ class MinImuNode(Node):
         self.declare_parameter("ang_vel_cov", 1e-2)
         self.declare_parameter("mag_cov", 1e-6)
 
+        self.declare_parameter("gyro_bias_samples", 250)
+        self.declare_parameter("gyro_bias_max_var", 0.001)
+        self.declare_parameter("gyro_publish_during_cal", False)
+
         self.frame_id = self.get_parameter("frame_id").value
         self.rate_hz = float(self.get_parameter("rate_hz").value)
         self.lin_acc_cov = float(self.get_parameter("lin_acc_cov").value)
         self.ang_vel_cov = float(self.get_parameter("ang_vel_cov").value)
         self.mag_cov = float(self.get_parameter("mag_cov").value)
 
+        self.gyro_bias_samples = int(self.get_parameter("gyro_bias_samples").value)
+        self.gyro_bias_max_var = float(self.get_parameter("gyro_bias_max_var").value)
+        self.gyro_publish_during_cal = bool(self.get_parameter("gyro_publish_during_cal").value)
+
+        self.gyro_bias = np.zeros(3)
+        self.gyro_buffer = []
+        self.gyro_calibrated = False
+
         self.imu_pub = self.create_publisher(Imu, "/imu/data_raw", 20)
         self.mag_pub = self.create_publisher(MagneticField, "/imu/mag", 20)
+
+        self.zero_srv = self.create_service(Trigger, "/imu/gyro_zero", self._handle_gyro_zero)
 
         self.lsm = None
         self.lis = None
@@ -43,6 +60,7 @@ class MinImuNode(Node):
         self.reinit_threshold = 10
 
         self._init_sensor()
+        self._start_gyro_cal()
 
         period = 1.0 / self.rate_hz if self.rate_hz > 0 else 0.02
         self.timer = self.create_timer(period, self._tick)
@@ -63,11 +81,51 @@ class MinImuNode(Node):
 
         self.get_logger().info("MinIMU-9 v6 ready")
 
+    def _start_gyro_cal(self):
+        self.gyro_buffer = []
+        self.gyro_calibrated = False
+        self.get_logger().info(
+            f"Gyro calibration: collecting {self.gyro_bias_samples} stationary samples — do not move the glider"
+        )
+
+    def _handle_gyro_zero(self, request, response):
+        self._start_gyro_cal()
+        response.success = True
+        response.message = f"gyro cal restarted: {self.gyro_bias_samples} samples"
+        return response
+
     def _tick(self):
         try:
             ax, ay, az = self.lsm.acceleration      #m/s^2
             gx, gy, gz = self.lsm.gyro              #rad/s
             mx, my, mz = self.lis.magnetic          #uT
+
+            if not self.gyro_calibrated:
+                self.gyro_buffer.append([gx, gy, gz])
+                if len(self.gyro_buffer) >= self.gyro_bias_samples:
+                    arr = np.array(self.gyro_buffer)
+                    max_var = float(np.max(np.var(arr, axis=0)))
+                    if max_var > self.gyro_bias_max_var:
+                        self.get_logger().warn(
+                            f"motion during gyro cal (max axis variance {max_var:.5f} > {self.gyro_bias_max_var:.5f}), restarting"
+                        )
+                        self.gyro_buffer = []
+                    else:
+                        self.gyro_bias = np.mean(arr, axis=0)
+                        self.gyro_calibrated = True
+                        self.get_logger().info(
+                            f"Gyro bias: [{self.gyro_bias[0]:+.4f}, {self.gyro_bias[1]:+.4f}, {self.gyro_bias[2]:+.4f}] rad/s "
+                            f"(max axis var {max_var:.5f})"
+                        )
+
+                if not self.gyro_publish_during_cal:
+                    self.consecutive_bad = 0
+                    return
+
+            if self.gyro_calibrated:
+                gx -= float(self.gyro_bias[0])
+                gy -= float(self.gyro_bias[1])
+                gz -= float(self.gyro_bias[2])
 
             stamp = self.get_clock().now().to_msg()
 
