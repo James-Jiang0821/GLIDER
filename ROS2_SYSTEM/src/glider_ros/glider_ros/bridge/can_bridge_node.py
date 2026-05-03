@@ -19,10 +19,11 @@ VBD_L  = 1
 VBD_R  = 2
 PR     = 3
 
-CMD_BASE    = 0x100
-STATUS_BASE = 0x200
-FAULT_BASE  = 0x050
-BMS_BASE    = 0x210
+CMD_BASE      = 0x100
+STATUS_BASE   = 0x200
+FAULT_BASE    = 0x050
+BMS_BASE      = 0x210
+BMS_MORE_BASE = 0x220   # VBD only — 0x221/0x222
 
 
 class CanBridgeNode(Node):
@@ -148,8 +149,16 @@ class CanBridgeNode(Node):
 
         for name, typ in [('pos_mm', Float64), ('tof_mm', Float64), ('leak', Bool),
                           ('homed', Bool), ('seq', UInt8), ('fault', String),
-                          ('bms_voltage_v', Float64), ('bms_temp_c', Float64),
-                          ('bms_flag', UInt8)]:
+                          ('status_flags', String), ('motor_current_a', Float64),
+                          ('bms_voltage_v', Float64), ('bms_current_a', Float64),
+                          ('bms_min_cell_v', Float64), ('bms_max_cell_v', Float64),
+                          ('bms_temp_internal_c', Float64),
+                          ('bms_temp_ext1_c', Float64), ('bms_temp_ext2_c', Float64),
+                          ('bms_cell1_v', Float64), ('bms_cell2_v', Float64),
+                          ('bms_cell3_v', Float64), ('bms_cell4_v', Float64),
+                          ('bms_cell5_v', Float64), ('bms_cell6_v', Float64),
+                          ('bms_online_status', UInt8),
+                          ('bms_online_str', String)]:
             setattr(self, f'pub_vbd_{side}_{name}',
                 self.create_publisher(typ, f'/bridge/vbd_{side}/{name}', 10))
 
@@ -181,7 +190,7 @@ class CanBridgeNode(Node):
         cmd_bits = (0x01 if self.pr_enable else 0) | (0x02 if self.pr_home else 0)
         self.seq_pr = (self.seq_pr + 1) & 0xFF
 
-        data = struct.pack('>hhBxBx', pitch_raw, roll_raw, cmd_bits, self.seq_pr)
+        data = struct.pack('<hhBxBx', pitch_raw, roll_raw, cmd_bits, self.seq_pr)
         self._tx(CMD_BASE + PR, data)
 
     def _send_vbd_cmd(self, node_id, side):
@@ -250,7 +259,8 @@ class CanBridgeNode(Node):
 
             for base, handler in [(STATUS_BASE, self._parse_status),
                                   (FAULT_BASE, self._parse_fault),
-                                  (BMS_BASE, self._parse_bms)]:
+                                  (BMS_BASE, self._parse_bms),
+                                  (BMS_MORE_BASE, self._parse_bms_more)]:
                 node_id = cid - base
                 if node_id in (VBD_L, VBD_R, PR):
                     handler(node_id, d)
@@ -269,9 +279,9 @@ class CanBridgeNode(Node):
 
     def _parse_pr_status(self, d):
         #P&R STATUS_CONTROL (0x203): pitch/roll int16, byte4/byte5 flag layouts, byte6 seq, byte7 tof int8 1mm
-        pitch_raw, roll_raw = struct.unpack_from('>hh', d, 0)
+        pitch_raw, roll_raw = struct.unpack_from('<hh', d, 0)
         b4, b5, seq = d[4], d[5], d[6]
-        tof = struct.unpack_from('>b', d, 7)[0]
+        tof = struct.unpack_from('<b', d, 7)[0]
 
         self._pub_f64(self.pub_pr_pitch_pos, pitch_raw / 10.0)
         self._pub_f64(self.pub_pr_roll_pos, roll_raw / 10.0)
@@ -302,26 +312,31 @@ class CanBridgeNode(Node):
         self.pub_pr_status.publish(s)
 
     def _parse_vbd_status(self, node_id, d):
-        #VBD STATUS_CONTROL (0x201/0x202): pos/tof uint16 little-endian, byte4 flags, byte5 pwm, byte6 seq, byte7 current
+        #VBD STATUS_CONTROL (0x201/0x202): pos/tof uint16 LE, byte4 flags, byte5 pwm, byte6 seq, byte7 motor_current int8 0.1A/LSB
         side = 'left' if node_id == VBD_L else 'right'
 
         pos_raw = struct.unpack_from('<H', d, 0)[0]
         tof_raw = struct.unpack_from('<H', d, 2)[0]
         b4 = d[4]
         seq = d[6]
+        motor_current_raw = struct.unpack_from('<b', d, 7)[0]
 
         #VBD pos wire units are 0.01 mm/LSB (firmware multiplies by 100); ToF wire units are mm/LSB
         self._pub_f64(getattr(self, f'pub_vbd_{side}_pos_mm'), pos_raw / 100.0)
         self._pub_f64(getattr(self, f'pub_vbd_{side}_tof_mm'), float(tof_raw))
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_motor_current_a'), motor_current_raw / 10.0)
 
-        #VBD: leak is byte 4 bit 1
+        #flags byte 4: bit0 prox, bit1 leak, bit2 driver_flt, bit3 homed, bit4 moving, bit5 motor_enabled, bit6 dir
         leak = bool(b4 & 0x02)
-        self._pub_bool(getattr(self, f'pub_vbd_{side}_leak'), leak)
-
-        #VBD: homed is byte 4 bit 3
         homed = bool(b4 & 0x08)
+        self._pub_bool(getattr(self, f'pub_vbd_{side}_leak'), leak)
         self._pub_bool(getattr(self, f'pub_vbd_{side}_homed'), homed)
         self._pub_u8(getattr(self, f'pub_vbd_{side}_seq'), seq)
+
+        vbd_flag_names = ['prox','leak','driver_flt','homed','moving','motor_enabled','dir']
+        flags = [n for i, n in enumerate(vbd_flag_names) if b4 & (1 << i)]
+        s = String(); s.data = ','.join(flags) if flags else 'none'
+        getattr(self, f'pub_vbd_{side}_status_flags').publish(s)
 
         with self._home_lock:
             if node_id == VBD_L:
@@ -341,15 +356,23 @@ class CanBridgeNode(Node):
             self._parse_vbd_fault(node_id, d)
 
     def _parse_pr_fault(self, d):
-        #P&R FAULT (0x053): byte0/byte1 hard-fault bits, byte2 soft-fault bits (see lists below)
+        #P&R FAULT (0x053): byte0/1 hard bits, byte2 soft bits, byte4 first_hard_fault code, byte5 state
         pr_hard_b0 = ['LEAK','DRIVER_PITCH','DRIVER_ROLL','CMD_TO_L',
                       'PITCH_N_HOME','ROLL_N_HOME','BMS_TEMP','BMS_TO_L']
         pr_hard_b1 = ['BMS_OC','BMS_SWITCH','STALL_PITCH','STALL_ROLL']
         pr_soft_b2 = ['CMD_TO','TOF_INV','BMS_TO','BMS_LOW','BMS_HIGH']
+        pr_first_codes = ['NONE','LEAK','DRIVER_P','DRIVER_R','CMD_TO_L',
+                          'HOMING_P','HOMING_R','BMS_TEMP','BMS_TO_L',
+                          'BMS_OC','BMS_SWITCH','STALL_P','STALL_R']
 
         hards = [n for i, n in enumerate(pr_hard_b0) if d[0] & (1 << i)]
         hards += [n for i, n in enumerate(pr_hard_b1) if d[1] & (1 << i)]
         softs = [n for i, n in enumerate(pr_soft_b2) if d[2] & (1 << i)]
+
+        first_code = d[4]
+        first_str = (pr_first_codes[first_code]
+                     if first_code < len(pr_first_codes)
+                     else f'UNK({first_code})')
 
         state = d[5]
         state_names = ['UNHOMED','HOMING','RUN','HOLD','FAULT']
@@ -361,19 +384,27 @@ class CanBridgeNode(Node):
             if 'ROLL_N_HOME' in hards:
                 self._pr_roll_n_home_fault = True
 
-        self._publish_fault_msg(self.pub_pr_fault, hards, softs, state_str, PR)
+        self._publish_fault_msg(self.pub_pr_fault, hards, softs, state_str, PR, first_str)
 
     def _parse_vbd_fault(self, node_id, d):
-        #VBD FAULT (0x051/0x052): byte0/byte1 hard-fault bits, byte2 soft-fault bits (see lists below)
+        #VBD FAULT (0x051/0x052): byte0/1 hard bits, byte2 soft bits, byte4 first_hard_fault code, byte5 state
         vbd_hard_b0 = ['LEAK','DRIVER_FLT','OVERCURRENT','STALL',
                        'CMD_TO_L','NOT_HOMED','POS_LIM','BMS_TEMP']
         vbd_hard_b1 = ['BMS_TO_L','BMS_OC','BMS_SWITCH']
         vbd_soft_b2 = ['CMD_TO','TOF_INV','TOF_OOR','SLIP',
                        'ENCODER_INV','BMS_TO','BMS_LOW','BMS_HIGH']
+        vbd_first_codes = ['NONE','LEAK','DRIVER','OVERCURRENT','STALL',
+                           'CMD_TO_L','HOMING_FAILED','POS_LIMIT',
+                           'BMS_TEMP','BMS_TO_L','BMS_OC','BMS_SWITCH']
 
         hards = [n for i, n in enumerate(vbd_hard_b0) if d[0] & (1 << i)]
         hards += [n for i, n in enumerate(vbd_hard_b1) if d[1] & (1 << i)]
         softs = [n for i, n in enumerate(vbd_soft_b2) if d[2] & (1 << i)]
+
+        first_code = d[4]
+        first_str = (vbd_first_codes[first_code]
+                     if first_code < len(vbd_first_codes)
+                     else f'UNK({first_code})')
 
         state = d[5]
         state_names = ['UNHOMED','HOMING','RUN','HOLD','FAULT']
@@ -388,13 +419,15 @@ class CanBridgeNode(Node):
 
         side = 'left' if node_id == VBD_L else 'right'
         pub = getattr(self, f'pub_vbd_{side}_fault')
-        self._publish_fault_msg(pub, hards, softs, state_str, node_id)
+        self._publish_fault_msg(pub, hards, softs, state_str, node_id, first_str)
 
-    def _publish_fault_msg(self, pub, hards, softs, state_str, node_id):
+    def _publish_fault_msg(self, pub, hards, softs, state_str, node_id, first_str=None):
+        first_part = f'|first:{first_str}' if first_str and first_str != 'NONE' else ''
         if hards:
-            s = String(); s.data = f'HARD:{",".join(hards)}|state:{state_str}'
+            s = String(); s.data = f'HARD:{",".join(hards)}{first_part}|state:{state_str}'
             pub.publish(s)
-            self.get_logger().error(f'Node {node_id} HARD: {",".join(hards)}')
+            tail = f' (first:{first_str})' if first_str and first_str != 'NONE' else ''
+            self.get_logger().error(f'Node {node_id} HARD: {",".join(hards)}{tail}')
         elif softs:
             s = String(); s.data = f'SOFT:{",".join(softs)}|state:{state_str}'
             pub.publish(s)
@@ -403,32 +436,77 @@ class CanBridgeNode(Node):
             s = String(); s.data = f'OK|state:{state_str}'
             pub.publish(s)
 
-    #STATUS_BMS parsing (same format for both P&R and VBD)
+    #STATUS_BMS parsing — PR keeps old uint16 layout, VBD uses new per-byte encoding
 
     def _parse_bms(self, node_id, d):
-        #BMS (0x211/0x212/0x213): pack_mV uint16, pack_temp int16, byte4 bms flag, byte6 seq
+        if node_id == PR:
+            self._parse_pr_bms(d)
+        elif node_id in (VBD_L, VBD_R):
+            self._parse_vbd_bms(node_id, d)
+
+    def _parse_pr_bms(self, d):
+        #P&R BMS (0x213): pack_mV uint16 LE, pack_temp int16 LE (0.1°C), byte4 bms_flag, byte6 seq
         if len(d) < 7:
             return
 
-        pack_mv, temp_raw = struct.unpack_from('>Hh', d, 0)
+        pack_mv, temp_raw = struct.unpack_from('<Hh', d, 0)
         bms_flag = d[4]
         voltage_v = pack_mv / 1000.0
         temp_c = temp_raw / 10.0
 
-        if node_id == PR:
-            pv, pt, pf = self.pub_pr_bms_v, self.pub_pr_bms_t, self.pub_pr_bms_flag
-        else:
-            side = 'left' if node_id == VBD_L else 'right'
-            pv = getattr(self, f'pub_vbd_{side}_bms_voltage_v')
-            pt = getattr(self, f'pub_vbd_{side}_bms_temp_c')
-            pf = getattr(self, f'pub_vbd_{side}_bms_flag')
-
-        self._pub_f64(pv, voltage_v)
-        self._pub_f64(pt, temp_c)
-        self._pub_u8(pf, bms_flag)
+        self._pub_f64(self.pub_pr_bms_v, voltage_v)
+        self._pub_f64(self.pub_pr_bms_t, temp_c)
+        self._pub_u8(self.pub_pr_bms_flag, bms_flag)
 
         if bms_flag:
-            self.get_logger().warn(f'Node {node_id} BMS flag 0x{bms_flag:02X} {voltage_v:.2f}V {temp_c:.1f}C')
+            self.get_logger().warn(f'Node {PR} BMS flag 0x{bms_flag:02X} {voltage_v:.2f}V {temp_c:.1f}C')
+
+    def _parse_vbd_bms(self, node_id, d):
+        #VBD BMS (0x211/0x212): byte0 pack_V*0.1V, byte1 min_cell ((mV-2500)/10), byte2 max_cell same,
+        #byte3 pack_current int8 *0.5A (+ = discharge), bytes 4/5/6 temp_internal/ext1/ext2 °C (0xFF=invalid), byte7 seq
+        if len(d) < 8:
+            return
+
+        side = 'left' if node_id == VBD_L else 'right'
+
+        voltage_v = d[0] * 0.1
+        min_cell_v = (d[1] * 10 + 2500) / 1000.0
+        max_cell_v = (d[2] * 10 + 2500) / 1000.0
+        current_a = struct.unpack_from('<b', d, 3)[0] * 0.5
+
+        def temp(b):
+            return float('nan') if b == 0xFF else float(b)
+
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_bms_voltage_v'), voltage_v)
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_bms_current_a'), current_a)
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_bms_min_cell_v'), min_cell_v)
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_bms_max_cell_v'), max_cell_v)
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_bms_temp_internal_c'), temp(d[4]))
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_bms_temp_ext1_c'), temp(d[5]))
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_bms_temp_ext2_c'), temp(d[6]))
+
+    def _parse_bms_more(self, node_id, d):
+        #STATUS_BMS_MORE (0x221/0x222): VBD only — bytes 0-5 cell_V[0..5] uint8 ((mV-2500)/10),
+        #byte6 online_status enum (0=Unknown 1=Charging 2=FullyCharged 3=Discharging 4=Idle 5=Fault), byte7 seq
+        if node_id not in (VBD_L, VBD_R) or len(d) < 8:
+            return
+
+        side = 'left' if node_id == VBD_L else 'right'
+
+        for i in range(6):
+            cell_v = (d[i] * 10 + 2500) / 1000.0
+            self._pub_f64(getattr(self, f'pub_vbd_{side}_bms_cell{i+1}_v'), cell_v)
+
+        online = d[6]
+        self._pub_u8(getattr(self, f'pub_vbd_{side}_bms_online_status'), online)
+
+        online_names = ['Unknown','Charging','FullyCharged','Discharging','Idle','Fault']
+        online_str = online_names[online] if online < len(online_names) else f'UNK({online})'
+        s = String(); s.data = online_str
+        getattr(self, f'pub_vbd_{side}_bms_online_str').publish(s)
+
+        if online == 5:
+            self.get_logger().warn(f'Node {node_id} BMS online_status=Fault')
 
     #HomeActuators action server
 
