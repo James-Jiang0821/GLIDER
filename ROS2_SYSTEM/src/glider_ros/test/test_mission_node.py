@@ -1,3 +1,11 @@
+"""
+Integration tests for MissionNode.
+
+Tests are split into three classes:
+    TestMissionNodeStaticMode: Internal, no ROS topics involved
+    TestMissionNodeMissionMode: Internal, no ROS topics involved
+    TestMissionNodePubSub: External, verifies that the node publishes expected messages
+"""
 import threading
 import time
 
