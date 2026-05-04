@@ -66,7 +66,7 @@ class CanBridgeNode(Node):
         self._last_tx_warn_time = {}
         self._tx_fail_count = 0
 
-        #bus state tracking — log transitions only, not every poll
+        #bus state tracking, log transitions only, not every poll
         self._last_bus_state = None
 
         self._setup_pr_interface()
@@ -84,7 +84,7 @@ class CanBridgeNode(Node):
         self._pr_pitch_n_home_fault = False
         self._pr_roll_n_home_fault = False
 
-        #action runs on its own callback group so the 20 Hz _republish_commands timer keeps running during blocking _home_execute
+        #action runs on its own callback group so the 20 Hz republish_commands timer keeps running during blocking _home_execute
         self._action_cb_group = ReentrantCallbackGroup()
         self._home_action_server = ActionServer(
             self,
@@ -176,7 +176,7 @@ class CanBridgeNode(Node):
     def _cb_pr_home(self, msg):
         self.pr_home = msg.data
 
-    #outgoing: ROS topics -> CAN frames
+    #= ROS topics to CAN frames
 
     def _republish_commands(self):
         self._send_pr_cmd()
@@ -247,7 +247,7 @@ class CanBridgeNode(Node):
                 f'{line} — Pi controller unhealthy. If state is ERROR or BUS-OFF, '
                 f'verify `restart-ms` is non-zero on can0 (see `ip -details link show can0`).')
 
-    #incoming: CAN frames -> ROS topics
+    #incoming: CAN frames into ROS topics
 
     def _can_rx_loop(self):
         while self._running:
@@ -436,8 +436,7 @@ class CanBridgeNode(Node):
             s = String(); s.data = f'OK|state:{state_str}'
             pub.publish(s)
 
-    #STATUS_BMS parsing — PR keeps old uint16 layout, VBD uses new per-byte encoding
-
+    #STATUS_BMS parsing 
     def _parse_bms(self, node_id, d):
         if node_id == PR:
             self._parse_pr_bms(d)
@@ -445,7 +444,7 @@ class CanBridgeNode(Node):
             self._parse_vbd_bms(node_id, d)
 
     def _parse_pr_bms(self, d):
-        #P&R BMS (0x213): pack_mV uint16 LE, pack_temp int16 LE (0.1°C), byte4 bms_flag, byte6 seq
+        #P&R BMS (0x213): pack_mV uint16 LE, pack_temp int16 LE (0.1C), byte4 bms_flag, byte6 seq
         if len(d) < 7:
             return
 
