@@ -80,7 +80,7 @@ class MissionNode(Node):
         self._sub_force_surface = self.create_subscription(
             Bool, '/controller/force_surface', self._cb_force_surface, 10)
 
-        self.pub_pitch_sp = self.create_publisher(Float64, '/mission/pitch_setpoint', 10)
+        self.pub_alpha_sp = self.create_publisher(Float64, '/mission/alpha_setpoint', 10)
         self.pub_roll_sp = self.create_publisher(Float64, '/mission/roll_setpoint', 10)
         self.pub_vbd_sp = self.create_publisher(Float64, '/mission/vbd_setpoint', 10)
         self.pub_phase = self.create_publisher(String, '/controller/phase', 10)
@@ -171,8 +171,8 @@ class MissionNode(Node):
 
     #publish helpers
 
-    def _publish_setpoints(self, pitch_rad: float, roll_rad: float, vbd_pct: float):
-        m = Float64(); m.data = float(pitch_rad); self.pub_pitch_sp.publish(m)
+    def _publish_setpoints(self, alpha_rad: float, roll_rad: float, vbd_pct: float):
+        m = Float64(); m.data = float(alpha_rad); self.pub_alpha_sp.publish(m)
         m = Float64(); m.data = float(roll_rad);  self.pub_roll_sp.publish(m)
         m = Float64(); m.data = float(vbd_pct);   self.pub_vbd_sp.publish(m)
 

@@ -156,13 +156,15 @@ controller_node:
     #Feature toggles
     enable_roll: true
 
-    #Pitch (theta) outer loop
+    #Outer pitch loop on alpha, with D-on-measurement
     Kp_theta: 1.5
     Ti_theta: 750.0
+    Td_theta: 20.0
 
-    #Pitch rate (q) inner loop
-    Kp_q: 0.02
-    Ti_q: 5.0
+    #Inner pitch-rate loop, back-calculation AW (Tt_q = 0 falls back to Ti_q)
+    Kp_q: 0.3
+    Ti_q: 3.0
+    Tt_q: 0.0
 
     #Roll (phi) outer loop
     Kp_phi: 0.3
@@ -186,3 +188,12 @@ controller_node:
     #Output filter time constants (s)
     shift_cmd_tau: 0.01
     roll_cmd_tau: 5.0
+
+    #Alpha estimator: alpha = theta - gamma, V_h from accelerometer integration
+    accel_bias_x: 0.0          #m/s^2, set from a level bench measurement
+    depth_rate_tau: 1.0        #s, LPF on finite-diff depth rate
+    imu_topic: "/imu/data_raw"
+
+    #true = alpha feedback, false = direct theta feedback (tank/bench/surface).
+    #Outer integrator resets on flip.
+    use_alpha_feedback: true

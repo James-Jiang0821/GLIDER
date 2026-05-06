@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""PI control lifecycle node. Tracks pitch, roll and vbd setpoints from mission_node and drives actuators."""
+"""Cascaded PI lifecycle controller. Outer alpha (or theta) loop, inner rate loop, drives shift/roll-mass/VBD."""
 
 import math
 import rclpy
 from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
 from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Float64, UInt8
+from sensor_msgs.msg import Imu
 from glider_msgs.msg import Float64Stamped
 
 
@@ -29,6 +30,15 @@ class PIController:
             self.integral += error * dt
         return output
 
+    def compute_backcalc(self, error, dt, Tt):
+        unsat = self.kp * error + self.ki * (self.integral + error * dt)
+        sat = max(self.out_min, min(self.out_max, unsat))
+        if Tt > 1e-6:
+            self.integral += (error + (sat - unsat) / Tt) * dt
+        else:
+            self.integral += error * dt
+        return sat
+
 
 class FirstOrderFilter:
     def __init__(self, tau, initial=0.0):
@@ -51,11 +61,13 @@ class GliderController(LifecycleNode):
     def __init__(self):
         super().__init__('controller_node')
 
-        #parameters, defaults overridden by glider_params.yaml
+        # parameters, defaults overridden by glider_params.yaml
         self.declare_parameter('Kp_theta', 1.5)
         self.declare_parameter('Ti_theta', 750.0)
-        self.declare_parameter('Kp_q', 0.02)
-        self.declare_parameter('Ti_q', 5.0)
+        self.declare_parameter('Td_theta', 20.0)
+        self.declare_parameter('Kp_q', 0.3)
+        self.declare_parameter('Ti_q', 3.0)
+        self.declare_parameter('Tt_q', 0.0)
         self.declare_parameter('Kp_phi', 0.3)
         self.declare_parameter('Ti_phi', 15.0)
         self.declare_parameter('Kp_p', 4.0)
@@ -69,14 +81,26 @@ class GliderController(LifecycleNode):
         self.declare_parameter('roll_cmd_tau', 5.0)
         self.declare_parameter('control_rate_hz', 10.0)
         self.declare_parameter('enable_roll', True)
+        self.declare_parameter('accel_bias_x', 0.0)
+        self.declare_parameter('depth_rate_tau', 1.0)
+        self.declare_parameter('imu_topic', '/imu/data_raw')
+        self.declare_parameter('use_alpha_feedback', True)
 
-        #sensor state
+        # sensor state
         self.theta = 0.0
         self.q = 0.0
         self.phi = 0.0
         self.p = 0.0
+        self.depth = 0.0
 
-        self.pitch_setpoint = 0.0
+        # alpha-estimator state
+        self.V_x_body = 0.0
+        self._imu_t_prev = None
+        self._depth_prev = None
+        self._depth_t_prev = None
+
+        # mission setpoints
+        self.alpha_setpoint = 0.0
         self.roll_setpoint = 0.0
         self.vbd_setpoint = 100.0
 
@@ -84,41 +108,49 @@ class GliderController(LifecycleNode):
         self._sub_roll_rate = None
         self._sub_pitch = None
         self._sub_pitch_rate = None
-        self._sub_pitch_sp = None
+        self._sub_alpha_sp = None
         self._sub_roll_sp = None
         self._sub_vbd_sp = None
+        self._sub_imu = None
+        self._sub_depth = None
         self.pi_theta = None
         self.pi_q = None
         self.pi_phi = None
         self.pi_p = None
         self.filt_shift_cmd = None
         self.filt_roll_cmd = None
+        self.filt_ddot = None
         self.pub_pitch_mm = None
         self.pub_roll_deg = None
         self.pub_vbd_left = None
         self.pub_vbd_right = None
 
-        #set up in on_activate
+        # set up in on_activate
         self._ctrl_timer = None
         self.dt = 0.1
 
         self.add_on_set_parameters_callback(self._on_param_change)
 
-    #lifecycle callbacks
+    # lifecycle callbacks
 
     def on_configure(self, state):
         self._load_params()
 
+        #plain PI for outer pitch, outer roll, inner roll. Saturation applied externally.
         self.pi_theta = PIController(
-            self.Kp_theta, self.Ki_theta, -self.q_cmd_max, self.q_cmd_max)
+            self.Kp_theta, self.Ki_theta, -float('inf'), float('inf'))
+        self.pi_phi = PIController(
+            self.Kp_phi, self.Ki_phi, -float('inf'), float('inf'))
+        self.pi_p = PIController(
+            self.Kp_p, self.Ki_p, -float('inf'), float('inf'))
+
+        #inner pitch saturates internally so back-calc AW can read the limits
         self.pi_q = PIController(
             self.Kp_q, self.Ki_q, self.shift_min_m, self.shift_max_m)
-        self.pi_phi = PIController(
-            self.Kp_phi, self.Ki_phi, -self.p_cmd_max, self.p_cmd_max)
-        self.pi_p = PIController(
-            self.Kp_p, self.Ki_p, -self.roll_max_rad, self.roll_max_rad)
+
         self.filt_shift_cmd = FirstOrderFilter(self.shift_cmd_tau, 0.0)
         self.filt_roll_cmd = FirstOrderFilter(self.roll_cmd_tau, 0.0)
+        self.filt_ddot = FirstOrderFilter(self.depth_rate_tau, 0.0)
 
         self._sub_roll = self.create_subscription(
             Float64Stamped, '/glider/roll_rad', self._cb_roll, 10)
@@ -128,12 +160,16 @@ class GliderController(LifecycleNode):
             Float64Stamped, '/glider/pitch_rate_rad_s', self._cb_pitch_rate, 10)
         self._sub_roll_rate = self.create_subscription(
             Float64Stamped, '/glider/roll_rate_rad_s', self._cb_roll_rate, 10)
-        self._sub_pitch_sp = self.create_subscription(
-            Float64, '/mission/pitch_setpoint', self._cb_pitch_setpoint, 10)
+        self._sub_alpha_sp = self.create_subscription(
+            Float64, '/mission/alpha_setpoint', self._cb_alpha_setpoint, 10)
         self._sub_roll_sp = self.create_subscription(
             Float64, '/mission/roll_setpoint', self._cb_roll_setpoint, 10)
         self._sub_vbd_sp = self.create_subscription(
             Float64, '/mission/vbd_setpoint', self._cb_vbd_setpoint, 10)
+        self._sub_imu = self.create_subscription(
+            Imu, self.imu_topic, self._cb_imu, 50)
+        self._sub_depth = self.create_subscription(
+            Float64Stamped, '/pressure/depth', self._cb_depth, 10)
 
         self.pub_pitch_mm = self.create_publisher(Float64, '/controller/pitch_mm', 10)
         self.pub_roll_deg = self.create_publisher(Float64, '/controller/roll_deg', 10)
@@ -155,8 +191,14 @@ class GliderController(LifecycleNode):
         self.pi_p.reset()
         self.filt_shift_cmd.reset(0.0)
         self.filt_roll_cmd.reset(0.0)
+        self.filt_ddot.reset(0.0)
 
-        self.pitch_setpoint = 0.0
+        self.V_x_body = 0.0
+        self._imu_t_prev = None
+        self._depth_prev = None
+        self._depth_t_prev = None
+
+        self.alpha_setpoint = 0.0
         self.roll_setpoint = 0.0
         self.vbd_setpoint = 100.0
 
@@ -175,7 +217,8 @@ class GliderController(LifecycleNode):
 
     def on_cleanup(self, state):
         for attr in ('_sub_roll', '_sub_roll_rate', '_sub_pitch', '_sub_pitch_rate',
-                     '_sub_pitch_sp', '_sub_roll_sp', '_sub_vbd_sp'):
+                     '_sub_alpha_sp', '_sub_roll_sp', '_sub_vbd_sp',
+                     '_sub_imu', '_sub_depth'):
             sub = getattr(self, attr, None)
             if sub:
                 self.destroy_subscription(sub)
@@ -191,14 +234,17 @@ class GliderController(LifecycleNode):
     def on_shutdown(self, state):
         return TransitionCallbackReturn.SUCCESS
 
-    #load and update parameters
+    # load and update parameters
 
     def _load_params(self):
         p = self.get_parameter
         self.Kp_theta = p('Kp_theta').value
         self.Ki_theta = self.Kp_theta / p('Ti_theta').value
+        self.Td_theta = p('Td_theta').value
         self.Kp_q = p('Kp_q').value
-        self.Ki_q = self.Kp_q / p('Ti_q').value
+        self.Ti_q = p('Ti_q').value
+        self.Ki_q = self.Kp_q / self.Ti_q
+        self.Tt_q = p('Tt_q').value
         self.Kp_phi = p('Kp_phi').value
         self.Ki_phi = self.Kp_phi / p('Ti_phi').value
         self.Kp_p = p('Kp_p').value
@@ -211,12 +257,17 @@ class GliderController(LifecycleNode):
         self.shift_cmd_tau = p('shift_cmd_tau').value
         self.roll_cmd_tau = p('roll_cmd_tau').value
         self.enable_roll = p('enable_roll').value
+        self.accel_bias_x = p('accel_bias_x').value
+        self.depth_rate_tau = p('depth_rate_tau').value
+        self.imu_topic = p('imu_topic').value
+        self.use_alpha_feedback = p('use_alpha_feedback').value
 
     def _on_param_change(self, params):
         for p in params:
             try:
                 if p.name == 'Kp_theta':
                     new_kp = float(p.value)
+                    self.Kp_theta = new_kp
                     if self.pi_theta is not None:
                         self.pi_theta.kp = new_kp
                         self.pi_theta.ki = new_kp / float(self.get_parameter('Ti_theta').value)
@@ -227,8 +278,11 @@ class GliderController(LifecycleNode):
                             successful=False, reason='Ti_theta must be non-zero')
                     if self.pi_theta is not None:
                         self.pi_theta.ki = float(self.get_parameter('Kp_theta').value) / new_ti
+                elif p.name == 'Td_theta':
+                    self.Td_theta = float(p.value)
                 elif p.name == 'Kp_q':
                     new_kp = float(p.value)
+                    self.Kp_q = new_kp
                     if self.pi_q is not None:
                         self.pi_q.kp = new_kp
                         self.pi_q.ki = new_kp / float(self.get_parameter('Ti_q').value)
@@ -237,10 +291,14 @@ class GliderController(LifecycleNode):
                     if new_ti == 0.0:
                         return SetParametersResult(
                             successful=False, reason='Ti_q must be non-zero')
+                    self.Ti_q = new_ti
                     if self.pi_q is not None:
                         self.pi_q.ki = float(self.get_parameter('Kp_q').value) / new_ti
+                elif p.name == 'Tt_q':
+                    self.Tt_q = float(p.value)
                 elif p.name == 'Kp_phi':
                     new_kp = float(p.value)
+                    self.Kp_phi = new_kp
                     if self.pi_phi is not None:
                         self.pi_phi.kp = new_kp
                         self.pi_phi.ki = new_kp / float(self.get_parameter('Ti_phi').value)
@@ -253,6 +311,7 @@ class GliderController(LifecycleNode):
                         self.pi_phi.ki = float(self.get_parameter('Kp_phi').value) / new_ti
                 elif p.name == 'Kp_p':
                     new_kp = float(p.value)
+                    self.Kp_p = new_kp
                     if self.pi_p is not None:
                         self.pi_p.kp = new_kp
                         self.pi_p.ki = new_kp / float(self.get_parameter('Ti_p').value)
@@ -264,15 +323,9 @@ class GliderController(LifecycleNode):
                     if self.pi_p is not None:
                         self.pi_p.ki = float(self.get_parameter('Kp_p').value) / new_ti
                 elif p.name == 'q_cmd_max':
-                    v = float(p.value); self.q_cmd_max = v
-                    if self.pi_theta is not None:
-                        self.pi_theta.out_min = -v
-                        self.pi_theta.out_max = v
+                    self.q_cmd_max = float(p.value)
                 elif p.name == 'p_cmd_max':
-                    v = float(p.value); self.p_cmd_max = v
-                    if self.pi_phi is not None:
-                        self.pi_phi.out_min = -v
-                        self.pi_phi.out_max = v
+                    self.p_cmd_max = float(p.value)
                 elif p.name == 'shift_max_m':
                     v = float(p.value); self.shift_max_m = v
                     if self.pi_q is not None:
@@ -282,10 +335,7 @@ class GliderController(LifecycleNode):
                     if self.pi_q is not None:
                         self.pi_q.out_min = v
                 elif p.name == 'roll_max_rad':
-                    v = float(p.value); self.roll_max_rad = v
-                    if self.pi_p is not None:
-                        self.pi_p.out_min = -v
-                        self.pi_p.out_max = v
+                    self.roll_max_rad = float(p.value)
                 elif p.name == 'shift_cmd_tau':
                     v = float(p.value); self.shift_cmd_tau = v
                     if self.filt_shift_cmd is not None:
@@ -294,6 +344,17 @@ class GliderController(LifecycleNode):
                     v = float(p.value); self.roll_cmd_tau = v
                     if self.filt_roll_cmd is not None:
                         self.filt_roll_cmd.tau = max(v, 1e-6)
+                elif p.name == 'depth_rate_tau':
+                    v = float(p.value); self.depth_rate_tau = v
+                    if self.filt_ddot is not None:
+                        self.filt_ddot.tau = max(v, 1e-6)
+                elif p.name == 'accel_bias_x':
+                    self.accel_bias_x = float(p.value)
+                elif p.name == 'use_alpha_feedback':
+                    new_mode = bool(p.value)
+                    if new_mode != self.use_alpha_feedback and self.pi_theta is not None:
+                        self.pi_theta.reset()
+                    self.use_alpha_feedback = new_mode
                 elif p.name == 'enable_roll':
                     self.enable_roll = bool(p.value)
             except (TypeError, ValueError) as e:
@@ -301,7 +362,7 @@ class GliderController(LifecycleNode):
                     successful=False, reason=f'bad value for {p.name}: {e}')
         return SetParametersResult(successful=True)
 
-    #sensor and setpoint callbacks
+    # sensor and setpoint callbacks
 
     def _cb_roll(self, msg: Float64Stamped):
         self.phi = msg.data
@@ -315,8 +376,8 @@ class GliderController(LifecycleNode):
     def _cb_roll_rate(self, msg: Float64Stamped):
         self.p = msg.data
 
-    def _cb_pitch_setpoint(self, msg: Float64):
-        self.pitch_setpoint = msg.data
+    def _cb_alpha_setpoint(self, msg: Float64):
+        self.alpha_setpoint = msg.data
 
     def _cb_roll_setpoint(self, msg: Float64):
         self.roll_setpoint = msg.data
@@ -324,7 +385,30 @@ class GliderController(LifecycleNode):
     def _cb_vbd_setpoint(self, msg: Float64):
         self.vbd_setpoint = msg.data
 
-    #publish helpers
+    def _cb_imu(self, msg: Imu):
+        t_now = self.get_clock().now().nanoseconds * 1e-9
+        a_x = msg.linear_acceleration.x
+        if self._imu_t_prev is not None:
+            dt = t_now - self._imu_t_prev
+            if dt > 0:
+                g_body_x = -9.81 * math.sin(self.theta)
+                a_x_lin = a_x - g_body_x - self.accel_bias_x
+                self.V_x_body += a_x_lin * dt
+        self._imu_t_prev = t_now
+
+    def _cb_depth(self, msg: Float64Stamped):
+        t_now = self.get_clock().now().nanoseconds * 1e-9
+        d_now = msg.data
+        if self._depth_prev is not None and self._depth_t_prev is not None:
+            dt = t_now - self._depth_t_prev
+            if dt > 0:
+                ddot_raw = (d_now - self._depth_prev) / dt
+                self.filt_ddot.update(ddot_raw, dt)
+        self._depth_prev = d_now
+        self._depth_t_prev = t_now
+        self.depth = d_now
+
+    # publish helpers
 
     def _publish_safe_actuators(self):
         if self.pub_pitch_mm is None:
@@ -334,30 +418,38 @@ class GliderController(LifecycleNode):
         m = UInt8();   m.data = 100;  self.pub_vbd_left.publish(m)
         m = UInt8();   m.data = 100;  self.pub_vbd_right.publish(m)
 
-    #control loop runs at control_rate_hz when ACTIVE
+    # control loop runs at control_rate_hz when ACTIVE
 
     def _control_loop(self):
-        #outer pitch loop
-        alpha_err = self.pitch_setpoint - self.theta
-        q_cmd = self.pi_theta.compute(alpha_err, self.dt)
+        if self.use_alpha_feedback:
+            V_h_est = self.V_x_body * math.cos(self.theta)
+            gamma_est = math.atan2(-self.filt_ddot.y, V_h_est)
+            alpha_est = self.theta - gamma_est
+            e_outer = self.alpha_setpoint - alpha_est
+        else:
+            e_outer = self.alpha_setpoint - self.theta
 
-        #inner pitch rate loop
+        y_pi1 = self.pi_theta.compute(e_outer, self.dt)
+        y_outer = y_pi1 - self.Kp_theta * self.Td_theta * self.q
+        q_cmd = max(-self.q_cmd_max, min(self.q_cmd_max, y_outer))
+
         q_err = self.q - q_cmd
-        shift_pi_out = self.pi_q.compute(q_err, self.dt)
+        Tt_eff = self.Tt_q if self.Tt_q > 1e-6 else self.Ti_q
+        shift_pi_out = self.pi_q.compute_backcalc(q_err, self.dt, Tt_eff)
 
         shift_smoothed = self.filt_shift_cmd.update(shift_pi_out, self.dt)
         shift_m = max(self.shift_min_m, min(self.shift_max_m, shift_smoothed))
 
         if self.enable_roll:
-            #outer roll loop
             phi_err = self.roll_setpoint - self.phi
-            p_cmd = self.pi_phi.compute(phi_err, self.dt)
+            y_pi_phi = self.pi_phi.compute(phi_err, self.dt)
+            p_cmd = max(-self.p_cmd_max, min(self.p_cmd_max, y_pi_phi))
 
-            #inner roll rate loop
             p_err = self.p - p_cmd
             roll_pi_out = self.pi_p.compute(p_err, self.dt)
+            roll_pi_sat = max(-self.roll_max_rad, min(self.roll_max_rad, roll_pi_out))
 
-            roll_smoothed = self.filt_roll_cmd.update(roll_pi_out, self.dt)
+            roll_smoothed = self.filt_roll_cmd.update(roll_pi_sat, self.dt)
             roll_rad = max(-self.roll_max_rad, min(self.roll_max_rad, roll_smoothed))
         else:
             roll_rad = 0.0
