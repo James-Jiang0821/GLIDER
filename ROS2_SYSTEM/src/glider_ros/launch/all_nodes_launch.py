@@ -36,25 +36,25 @@ def generate_launch_description():
             parameters=[glider_params],
             output='screen'
         ),
-        Node(
-            package='glider_ros',
-            executable='gnss_maxm10s_i2c_node',
-            name='gnss_maxm10s_i2c_node',
-            output='screen'
-        ),
-        LifecycleNode(
-            package='glider_ros',
-            executable='communication_iridium_node',
-            name='communication_iridium_node',
-            namespace='',
-            output='screen'
-        ),
-        Node(
-            package='glider_ros',
-            executable='sonar_ping_node',
-            name='sonar_ping_node',
-            output='screen'
-        ),
+        # Node(
+        #     package='glider_ros',
+        #     executable='gnss_maxm10s_i2c_node',
+        #     name='gnss_maxm10s_i2c_node',
+        #     output='screen'
+        # ),
+        # LifecycleNode(
+        #     package='glider_ros',
+        #     executable='communication_iridium_node',
+        #     name='communication_iridium_node',
+        #     namespace='',
+        #     output='screen'
+        # ),
+        # Node(
+        #     package='glider_ros',
+        #     executable='sonar_ping_node',
+        #     name='sonar_ping_node',
+        #     output='screen'
+        # ),
         Node(
             package='glider_ros',
             executable='pressure_keller_node',
@@ -71,29 +71,29 @@ def generate_launch_description():
             parameters=[glider_params],
             output='screen'
         ),
-        Node(
-            package='glider_ros',
-            executable='sonar_adapter_node',
-            name='sonar_adapter_node',
-            parameters=[glider_params],
-            output='screen'
-        ),
-        Node(
-            package='glider_ros',
-            executable='telemetry_adapter_node',
-            name='telemetry_adapter_node',
-            parameters=[glider_params],
-            output='screen'
-        ),
+        # Node(
+        #     package='glider_ros',
+        #     executable='sonar_adapter_node',
+        #     name='sonar_adapter_node',
+        #     parameters=[glider_params],
+        #     output='screen'
+        # ),
+        # Node(
+        #     package='glider_ros',
+        #     executable='telemetry_adapter_node',
+        #     name='telemetry_adapter_node',
+        #     parameters=[glider_params],
+        #     output='screen'
+        # ),
 
         #--- Safety ---
-        Node(
-            package='glider_ros',
-            executable='safety_node',
-            name='safety_node',
-            parameters=[glider_params],
-            output='screen'
-        ),
+        # Node(
+        #     package='glider_ros',
+        #     executable='safety_node',
+        #     name='safety_node',
+        #     parameters=[glider_params],
+        #     output='screen'
+        # ),
 
         #--- Mission ---
         Node(
