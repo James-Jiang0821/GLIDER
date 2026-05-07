@@ -49,13 +49,13 @@ pio run -t upload --project-option="build_flags=-D NODE_ID=2"
 
 The 1 kHz control loop runs:
 
-1. Read encoder + ToF → `Estimator` produces fused stroke estimate
+1. Read encoder + ToF -> `Estimator` produces fused stroke estimate
    (counts as primary, ToF as drift/slip correction).
 2. `SafetyManager` aggregates leak, motor fault, overcurrent, stall,
    command timeout, and BMS health into `hard_fault` / `soft_fault`
    bits — controllers never decide faults themselves.
 3. `PistonController` runs its state machine
-   (`UNHOMED → HOMING → RUN → HOLD → FAULT`), driving `PIDController`
+   (`UNHOMED -> HOMING -> RUN -> HOLD -> FAULT`), driving `PIDController`
    inside `RUN`.
 4. CAN frames at 50 Hz publish position, current, and status; setpoints
    and mode commands arrive on CAN from the ROS bridge.
@@ -106,7 +106,7 @@ Defined in [include/config/constants.hpp](include/config/constants.hpp):
 
 Bench tests are scripted/manual
 procedures captured as notes in [test/](test/), numbered by integration
-stage (motor only → ToF → PID → CAN → homing → safety). Run them in
+stage (motor only -> ToF -> PID -> CAN -> homing -> safety). Run them in
 order when bringing up a new board.
 
 ## Authors
