@@ -15,7 +15,7 @@ telemetry, and a CAN bridge to the Teensy-based P&R and VBD boards.
   - Keller pressure sensor (I2C)
   - Ping sonar (UART)
   - Iridium modem (UART)
-  - CAN bus to Teensy P&R (pitch/roll) + VBD (variable buoyancy) boards
+  - CAN bus to Teensy P&R (pitch & roll) + VBD (variable buoyancy) boards
 
 ## Build
 
