@@ -1,4 +1,4 @@
-# ROS2 Analysis
+# ROS2 Testing
 
 Post-test analysis scripts for ROS2 bag files recorded on a Raspberry Pi. Each folder corresponds to a test session and contains scripts to extract and process data from `.mcap` bag files into CSV format for analysis.
 

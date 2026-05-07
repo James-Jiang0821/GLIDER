@@ -14,4 +14,4 @@ Each subfolder has its own README with full details.
   - **[tsyVBDL/](TEENSY/tsyVBDL/README.md)** — Variable Buoyancy Device firmware (lead-screw piston with closed-loop position control).
 - **[PCB/](PCB/README.MD)** — KiCad schematics and layouts for the custom P&R and VBD boards.
 - **[BATTERY_BOARD/](BATTERY_BOARD/README.MD)** — KiCad designs for the P&R and VBD battery boards (A/B variants).
-- **[ROS2_ANALYSIS/](ROS2_ANALYSIS/README.md)** — Post-test analysis scripts for ROS 2 bag files (`.mcap` to CSV).
+- **[ROS2_TESTING/](ROS2_TESTING/README.md)** — Post-test analysis scripts for ROS 2 bag files (`.mcap` to CSV).
