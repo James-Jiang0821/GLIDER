@@ -52,7 +52,7 @@ can_bridge_node:
     #Which actuators participate in the HomeActuators action
     home_vbd_left: true
     home_vbd_right: true
-    home_pr: true
+    home_pr: false
 
 #-----------------------------------------------------------------------------
 #Sonar Adapter Node
