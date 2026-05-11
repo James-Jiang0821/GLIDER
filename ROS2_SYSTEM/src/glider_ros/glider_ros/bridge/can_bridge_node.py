@@ -512,7 +512,7 @@ class CanBridgeNode(Node):
     def _home_execute(self, goal_handle):
         timeout_s = float(goal_handle.request.timeout_s)
         if timeout_s <= 0.0:
-            timeout_s = 65.0
+            timeout_s = 180.0
 
         self.get_logger().info(f'HomeActuators: starting (timeout={timeout_s:.0f}s)')
 
