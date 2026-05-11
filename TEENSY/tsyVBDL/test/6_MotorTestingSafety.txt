@@ -50,6 +50,7 @@ float lastTofMm = 0.0f;
 float lastTofRawMm = 0.0f;
 bool lastDirectionExtend = true;
 int pwm = 0;
+int manual_pwm_cmd = 0;
 const int PWM_MAX = 255;
 uint32_t lastPrint = 0;
 
@@ -62,6 +63,7 @@ bool holding = false;
 
 // Serial
 String cmdBuffer;
+const uint16_t CMD_BUFFER_MAX_LEN = 64;
 
 // LED
 uint32_t lastLedToggle = 0;
@@ -131,6 +133,7 @@ static Estimator estimator({
 
 static PIDController pid;
 Estimator::Output lastEst{};
+ToFSensor::Reading lastToF{};
 
 static SafetyManager safety;
 SafetyManager::Output lastSafety{};
@@ -176,6 +179,14 @@ float computeSoftZoneScale(float pos_mm)
   }
 
   return 1.0f;
+}
+
+bool isHardLimitHit(float pos_mm, bool extending)
+{
+  if (extending) {
+    return pos_mm >= config::STROKE_HARD_MAX_MM;
+  }
+  return pos_mm <= config::STROKE_HARD_MIN_MM;
 }
 
 const char* modeName(ControlMode m)
@@ -274,6 +285,8 @@ void printStatus(const Estimator::Output& est)
 {
   const float error = target_mm - est.pos_est_mm;
   const bool leak_raw_now = leak.isLeak();
+  const bool flt_active = motor.faultActive();
+  const float motor_current_a = motor.readCurrentA();
 
   Serial.print("mode=");
   Serial.print(modeName(mode));
@@ -295,6 +308,24 @@ void printStatus(const Estimator::Output& est)
 
   Serial.print("  pwm=");
   Serial.print(pwm);
+
+  Serial.print("  flt=");
+  Serial.print(flt_active ? "Y" : "N");
+
+  Serial.print("  iA=");
+  Serial.print(motor_current_a, 2);
+
+  Serial.print("  tof=");
+  Serial.print(lastTofMm, 1);
+
+  Serial.print("  tofSt=");
+  Serial.print(lastToF.status);
+
+  Serial.print("  tofV=");
+  Serial.print(lastToF.valid ? "Y" : "N");
+
+  Serial.print("  tofF=");
+  Serial.print(lastToF.fresh ? "Y" : "N");
 
   Serial.print("  homed=");
   Serial.print(homed ? "Y" : "N");
@@ -321,6 +352,7 @@ void handleCommand(String cmd)
 
   if (cmd == "m") {
     mode = ControlMode::MANUAL;
+    manual_pwm_cmd = 0;
     motor.setPWM(0);
     pwm = 0;
     Serial.println("MANUAL mode");
@@ -369,8 +401,7 @@ void handleCommand(String cmd)
 
   if (cmd.startsWith("p")) {
     if (mode == ControlMode::AUTO || mode == ControlMode::CAN) return;
-    pwm = constrain(cmd.substring(1).toInt(), 0, 255);
-    motor.setPWM(pwm);
+    manual_pwm_cmd = constrain(cmd.substring(1).toInt(), 0, 255);
     return;
   }
 
@@ -389,6 +420,7 @@ void handleCommand(String cmd)
   }
 
   if (cmd == "s") {
+    manual_pwm_cmd = 0;
     pwm = 0;
     motor.setPWM(0);
     return;
@@ -483,7 +515,12 @@ void readSerialCommands()
         cmdBuffer = "";
       }
     } else {
-      cmdBuffer += c;
+      if (cmdBuffer.length() < CMD_BUFFER_MAX_LEN) {
+        cmdBuffer += c;
+      } else {
+        cmdBuffer = "";
+        Serial.println("ERROR: Command too long");
+      }
     }
   }
 }
@@ -598,6 +635,7 @@ void setup()
 {
   Serial.begin(115200);
   logger::begin(115200);
+  cmdBuffer.reserve(CMD_BUFFER_MAX_LEN);
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
@@ -608,7 +646,11 @@ void setup()
   estimator.reset();
   estimator.syncEncoder(enc.readCounts());
 
-  tof.begin(Wire1);
+  if (!tof.begin(Wire1)) {
+    Serial.println("WARN: ToF init failed");
+  } else {
+    Serial.println("ToF init OK");
+  }
 
   motor.begin();
   motor.enable();
@@ -664,20 +706,29 @@ void loop()
   float dt = (lastTime == 0) ? 0.0f : (now - lastTime) / 1000.0f;
   lastTime = now;
 
+  // If the loop hiccups badly, drop commanded output immediately.
+  if (dt > 0.2f) {
+    manual_pwm_cmd = 0;
+    pwm = 0;
+    holding = false;
+    pid.reset();
+    motor.setPWM(0);
+  }
+
   // Sensors
   int32_t counts = enc.readCounts();
-  (void)tof.read(); // still call driver, but we force a dummy value below for no-hardware testing.
 
-  const uint16_t tof_dummy_mm = 120;
-  lastTofRawMm = tof_dummy_mm;
-  lastTofMm = tof_dummy_mm;
-  bool tof_valid_hw = false; // force invalid since ToF hardware is unavailable in this test.
+  lastToF = tof.read();
+  lastTofRawMm = lastToF.mm;
+  lastTofMm = lastToF.mm;
 
-  // Keep same estimator behavior as test 4 (ToF fusion disabled)
+  // Estimator fuses only on fresh + valid samples.
+  bool tof_valid_estimator = lastToF.valid && lastToF.fresh;
+
   lastEst = estimator.update(
     counts,
-    false,
-    tof_dummy_mm,
+    tof_valid_estimator,
+    lastToF.mm,
     dt
   );
 
@@ -689,15 +740,36 @@ void loop()
   if (mode == ControlMode::CAN &&
       (millis() - lastCanRx > CAN_TIMEOUT_MS)) {
     motor.setPWM(0);
+    manual_pwm_cmd = 0;
+    pwm = 0;
     holding = false;
     mode = ControlMode::MANUAL;
     Serial.println("CAN TIMEOUT");
   }
 
   // -----------------------------
-  // Normal motion logic (same spirit as test4)
+  // Motion logic
   // -----------------------------
-  if (mode == ControlMode::AUTO || mode == ControlMode::CAN) {
+  if (mode == ControlMode::MANUAL) {
+    float pos = lastEst.pos_est_mm;
+    bool extending = lastDirectionExtend;
+
+    float duty = static_cast<float>(manual_pwm_cmd) / static_cast<float>(PWM_MAX);
+    duty *= computeSoftZoneScale(pos);
+
+    if (isHardLimitHit(pos, extending)) {
+      duty = 0.0f;
+    }
+
+    duty = constrain(duty, 0.0f, 1.0f);
+
+    pwm = static_cast<int>(roundf(duty * static_cast<float>(PWM_MAX)));
+
+    motor.setDirection(extending ?
+      MotorDriver::Direction::EXTEND :
+      MotorDriver::Direction::RETRACT);
+    motor.setPWM(pwm);
+  } else if (mode == ControlMode::AUTO || mode == ControlMode::CAN) {
     float pos = lastEst.pos_est_mm;
     float vel = lastEst.vel_est_mm_s;
 
@@ -715,6 +787,7 @@ void loop()
                           config::STROKE_HARD_MAX_MM);
 
     float error = target_mm - pos;
+    bool skipPid = false;
 
     if (holding) {
       if (fabs(error) > config::DRIFT_RESTART_MM) {
@@ -722,37 +795,49 @@ void loop()
       } else {
         pwm = 0;
         motor.setPWM(0);
+        skipPid = true;
       }
     }
 
-    if (!holding) {
+    if (!skipPid) {
       bool near_target = fabs(error) <= config::POS_TOL_MM;
-      if (near_target) {
-        motor.setPWM(0);
+      bool slow = fabs(vel) < 0.5f;
+      bool not_pushing_toward_target =
+        (error > 0 && vel <= 0) ||
+        (error < 0 && vel >= 0);
+
+      if (near_target && slow && not_pushing_toward_target) {
         pwm = 0;
+        motor.setPWM(0);
         holding = true;
-      } else {
-        float effort = pid.update(target_mm, pos, vel, dt);
-        bool dir = (effort > 0);
-        lastDirectionExtend = dir;
-        motor.setDirection(dir ?
-          MotorDriver::Direction::EXTEND :
-          MotorDriver::Direction::RETRACT);
-
-        float duty = fabs(effort);
-        if (duty > 0.0f) {
-          duty = config::MIN_DUTY +
-                 (1.0f - config::MIN_DUTY) * duty;
-        }
-        duty *= computeSoftZoneScale(pos);
-        duty = constrain(duty, 0.0f, 1.0f);
-
-        pwm = duty * PWM_MAX;
-        motor.setPWM(pwm);
+        skipPid = true;
       }
     }
-  } else {
-    // Manual mode leaves PWM under serial command.
+
+    if (!skipPid) {
+      float effort = pid.update(target_mm, pos, vel, dt);
+      bool dir = (effort > 0);
+      lastDirectionExtend = dir;
+
+      motor.setDirection(dir ?
+        MotorDriver::Direction::EXTEND :
+        MotorDriver::Direction::RETRACT);
+
+      float duty = fabs(effort);
+      if (duty > 0.0f) {
+        duty = config::MIN_DUTY +
+               (1.0f - config::MIN_DUTY) * duty;
+      }
+
+      duty *= computeSoftZoneScale(pos);
+      if (isHardLimitHit(pos, dir)) {
+        duty = 0.0f;
+      }
+
+      duty = constrain(duty, 0.0f, 1.0f);
+      pwm = duty * PWM_MAX;
+      motor.setPWM(pwm);
+    }
   }
 
   // -----------------------------
@@ -780,7 +865,7 @@ void loop()
   sin.bms_low_voltage = inj_bms_low_voltage;
   sin.bms_high_voltage = inj_bms_high_voltage;
 
-  sin.tof_valid = inj_tof_invalid ? false : tof_valid_hw;
+  sin.tof_valid = inj_tof_invalid ? false : lastToF.valid;
   sin.tof_out_of_range = inj_tof_out_of_range;
   sin.slip_detected = inj_slip || lastEst.slip_detected;
 
@@ -790,6 +875,7 @@ void loop()
   if (lastSafety.hard_fault) {
     motor.setPWM(0);
     motor.disable();
+    manual_pwm_cmd = 0;
     pwm = 0;
   } else {
     if (!motor.enabled()) {

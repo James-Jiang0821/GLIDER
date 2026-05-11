@@ -56,7 +56,8 @@ enum class ControlMode {
 
 ControlMode mode = ControlMode::MANUAL;
 
-int pwm = 0;
+int pwm = 0;               // applied PWM after safety shaping
+int manual_pwm_cmd = 0;    // raw manual command from serial
 const int PWM_MAX = 255;
 
 bool forward = true;
@@ -68,6 +69,7 @@ uint32_t lastPrint = 0;
 const uint32_t CONTROL_INTERVAL_MS = 2; // 500Hz
 
 Estimator::Output lastEst{};
+ToFSensor::Reading lastToF{};
 
 // --- Control state ---
 float target_mm_cmd = config::STROKE_HARD_MIN_MM;
@@ -76,9 +78,11 @@ float target_percent = 0.0f;
 
 bool homed = false;
 bool holding = false;
+bool posHardFaultLatched = false;
 
 // Serial buffer
 String cmdBuffer;
+const uint16_t CMD_BUFFER_MAX_LEN = 64;
 
 // -----------------------------
 // Helpers
@@ -114,6 +118,15 @@ float computeSoftZoneScale(float pos_mm)
   return 1.0f;
 }
 
+bool isHardLimitHit(float pos_mm, bool extending)
+{
+  if (extending) {
+    return pos_mm >= config::STROKE_HARD_MAX_MM;
+  }
+
+  return pos_mm <= config::STROKE_HARD_MIN_MM;
+}
+
 void printHelp() {
   Serial.println("\n=== Commands ===");
   Serial.println("m          -> manual mode");
@@ -122,12 +135,15 @@ void printHelp() {
   Serial.println("p<num>     -> set PWM (manual)");
   Serial.println("f / b      -> direction (manual)");
   Serial.println("s          -> stop");
+  Serial.println("x          -> clear latched position hard fault");
   Serial.println("z          -> home (must be near 10mm)");
   Serial.println("status     -> print status\n");
 }
 
 void printStatus(const Estimator::Output& est) {
   float error = target_mm - est.pos_est_mm;
+  float motor_current_a = motor.readCurrentA();
+  bool flt_active = motor.faultActive();
 
   Serial.print("mode=");
   Serial.print(mode == ControlMode::AUTO ? "AUTO" : "MANUAL");
@@ -150,6 +166,27 @@ void printStatus(const Estimator::Output& est) {
   Serial.print("  pwm=");
   Serial.print(pwm);
 
+  Serial.print("  flt=");
+  Serial.print(flt_active ? "Y" : "N");
+
+  Serial.print("  iA=");
+  Serial.print(motor_current_a, 2);
+
+  Serial.print("  tof=");
+  Serial.print(lastToF.mm);
+
+  Serial.print("  tofSt=");
+  Serial.print(lastToF.status);
+
+  Serial.print("  tofV=");
+  Serial.print(lastToF.valid ? "Y" : "N");
+
+  Serial.print("  tofF=");
+  Serial.print(lastToF.fresh ? "Y" : "N");
+
+  Serial.print("  hardLatch=");
+  Serial.print(posHardFaultLatched ? "Y" : "N");
+
   Serial.print("  homed=");
   Serial.print(homed ? "Y" : "N");
 
@@ -165,6 +202,8 @@ void handleCommand(String cmd) {
 
   if (cmd == "m") {
     mode = ControlMode::MANUAL;
+    manual_pwm_cmd = 0;
+    pwm = 0;
     motor.setPWM(0);
     Serial.println("MANUAL mode");
   }
@@ -200,8 +239,7 @@ void handleCommand(String cmd) {
   else if (cmd.startsWith("p")) {
     if (mode == ControlMode::AUTO) return;
 
-    pwm = constrain(cmd.substring(1).toInt(), 0, 255);
-    motor.setPWM(pwm);
+    manual_pwm_cmd = constrain(cmd.substring(1).toInt(), 0, 255);
   }
   else if (cmd == "f") {
     if (mode == ControlMode::AUTO) return;
@@ -214,8 +252,25 @@ void handleCommand(String cmd) {
     motor.setDirection(MotorDriver::Direction::RETRACT);
   }
   else if (cmd == "s") {
+    manual_pwm_cmd = 0;
     pwm = 0;
     motor.setPWM(0);
+  }
+  else if (cmd == "x") {
+    if (motor.faultActive()) {
+      Serial.println("ERROR: Driver fault still active");
+      return;
+    }
+
+    if (lastEst.pos_est_mm < config::STROKE_REAL_MIN_MM ||
+        lastEst.pos_est_mm > config::STROKE_REAL_MAX_MM) {
+      Serial.println("ERROR: Position still outside 0..150mm");
+      return;
+    }
+
+    posHardFaultLatched = false;
+    motor.enable();
+    Serial.println("Position hard fault latch cleared");
   }
   else if (cmd == "z") {
     float pos = lastEst.pos_est_mm;
@@ -248,7 +303,12 @@ void readSerialCommands() {
       handleCommand(cmdBuffer);
       cmdBuffer = "";
     } else {
-      cmdBuffer += c;
+      if (cmdBuffer.length() < CMD_BUFFER_MAX_LEN) {
+        cmdBuffer += c;
+      } else {
+        cmdBuffer = "";
+        Serial.println("ERROR: Command too long");
+      }
     }
   }
 }
@@ -259,13 +319,18 @@ void readSerialCommands() {
 void setup() {
   Serial.begin(115200);
   logger::begin(115200);
+  cmdBuffer.reserve(CMD_BUFFER_MAX_LEN);
 
   enc.begin();
 
   estimator.reset();
   estimator.syncEncoder(enc.readCounts());  // IMPORTANT
 
-  tof.begin(Wire1);
+  if (!tof.begin(Wire1)) {
+    Serial.println("WARN: ToF init failed");
+  } else {
+    Serial.println("ToF init OK");
+  }
 
   motor.begin();
   motor.enable();
@@ -295,6 +360,15 @@ void loop() {
              (now - lastTime) / 1000.0f;
   lastTime = now;
 
+  // If the control loop hiccups badly, drop motor output immediately.
+  if (dt > 0.2f) {
+    manual_pwm_cmd = 0;
+    pwm = 0;
+    holding = false;
+    pid.reset();
+    motor.setPWM(0);
+  }
+
   // -----------------------------
   // Read encoder (fast path)
   // -----------------------------
@@ -303,17 +377,17 @@ void loop() {
   // -----------------------------
   // Read ToF (slow / optional)
   // -----------------------------
-  auto tof_reading = tof.read();
+  lastToF = tof.read();
 
-  bool tof_valid = tof_reading.valid && tof_reading.fresh;
+  bool tof_valid = lastToF.valid && lastToF.fresh;
 
   // -----------------------------
   // Estimator (runs EVERY loop)
   // -----------------------------
   lastEst = estimator.update(
     counts,
-    false,          // fuse only if valid (tof_valid)
-    tof_reading.mm,
+    tof_valid,          // fuse only if valid (tof_valid) or false
+    lastToF.mm,
     dt
   );
 
@@ -325,15 +399,68 @@ void loop() {
   // -----------------------------
   // Safety
   // -----------------------------
-  if (motor.faultActive()) {
-    motor.stop();
-    while (1);
+  bool driverFaultActive = motor.faultActive();
+  bool posBeyondRealLimit =
+    (lastEst.pos_est_mm < config::STROKE_REAL_MIN_MM) ||
+    (lastEst.pos_est_mm > config::STROKE_REAL_MAX_MM);
+
+  if (posBeyondRealLimit) {
+    posHardFaultLatched = true;
+  }
+
+  bool inhibitMotion = false;
+  if (posHardFaultLatched) {
+    manual_pwm_cmd = 0;
+    pwm = 0;
+    motor.disable();
+    inhibitMotion = true;
+
+    static uint32_t lastFaultPrint = 0;
+    if (now - lastFaultPrint >= 1000) {
+      lastFaultPrint = now;
+      Serial.println("FAULT: Position exceeded 0..150mm, output disabled");
+    }
+  } else if (driverFaultActive) {
+    manual_pwm_cmd = 0;
+    pwm = 0;
+    motor.setPWM(0);
+    inhibitMotion = true;
+
+    static uint32_t lastDriverWarnPrint = 0;
+    if (now - lastDriverWarnPrint >= 1000) {
+      lastDriverWarnPrint = now;
+      Serial.println("WARN: Driver fault active, output inhibited");
+    }
+  }
+
+  // -----------------------------
+  // MANUAL CONTROL WITH SAFETY (runs EVERY loop)
+  // -----------------------------
+  if (!inhibitMotion && mode == ControlMode::MANUAL) {
+    float pos = lastEst.pos_est_mm;
+    bool extending = forward;
+
+    float duty = static_cast<float>(manual_pwm_cmd) / static_cast<float>(PWM_MAX);
+    duty *= computeSoftZoneScale(pos);
+
+    if (isHardLimitHit(pos, extending)) {
+      duty = 0.0f;
+    }
+
+    duty = constrain(duty, 0.0f, 1.0f);
+
+    pwm = static_cast<int>(roundf(duty * static_cast<float>(PWM_MAX)));
+
+    motor.setDirection(extending ?
+      MotorDriver::Direction::EXTEND :
+      MotorDriver::Direction::RETRACT);
+    motor.setPWM(pwm);
   }
 
   // -----------------------------
   // AUTO CONTROL (runs EVERY loop)
   // -----------------------------
-  if (mode == ControlMode::AUTO) {
+  else if (!inhibitMotion) {
 
     float pos = lastEst.pos_est_mm;
     float vel = lastEst.vel_est_mm_s;
@@ -355,51 +482,64 @@ void loop() {
 
     float error = target_mm - pos;
 
+    bool skipPid = false;
+
     // --- Holding logic ---
     if (holding) {
       if (fabs(error) > config::DRIFT_RESTART_MM) {
         holding = false;
       } else {
+        pwm = 0;
         motor.setPWM(0);
-        return;
+        skipPid = true;
       }
     }
 
     // --- improved stop condition ---
-    bool near_target = fabs(error) <= config::POS_TOL_MM;
-    bool slow = fabs(vel) < 0.5f;  // tighter threshold
+    if (!skipPid) {
+      bool near_target = fabs(error) <= config::POS_TOL_MM;
+      bool slow = fabs(vel) < 0.5f;  // tighter threshold
 
-    // check if we are NOT still moving toward the target
-    bool not_pushing_toward_target =
-      (error > 0 && vel <= 0) ||   // target ahead, but not moving toward it
-      (error < 0 && vel >= 0);     // target behind, but not moving toward it
+      // check if we are NOT still moving toward the target
+      bool not_pushing_toward_target =
+        (error > 0 && vel <= 0) ||   // target ahead, but not moving toward it
+        (error < 0 && vel >= 0);     // target behind, but not moving toward it
 
-    if (near_target && slow && not_pushing_toward_target) {
-      motor.setPWM(0);
-      holding = true;
-      return;
+      if (near_target && slow && not_pushing_toward_target) {
+        pwm = 0;
+        motor.setPWM(0);
+        holding = true;
+        skipPid = true;
+      }
     }
 
-    // --- PID ---
-    float effort = pid.update(target_mm, pos, vel, dt);
+    if (!skipPid) {
+      // --- PID ---
+      float effort = pid.update(target_mm, pos, vel, dt);
 
-    bool dir = (effort > 0);
-    motor.setDirection(dir ?
-      MotorDriver::Direction::EXTEND :
-      MotorDriver::Direction::RETRACT);
+      bool dir = (effort > 0);
+      motor.setDirection(dir ?
+        MotorDriver::Direction::EXTEND :
+        MotorDriver::Direction::RETRACT);
 
-    float duty = fabs(effort);
+      float duty = fabs(effort);
 
-    if (duty > 0.0f) {
-      duty = config::MIN_DUTY +
-             (1.0f - config::MIN_DUTY) * duty;
+      if (duty > 0.0f) {
+        duty = config::MIN_DUTY +
+               (1.0f - config::MIN_DUTY) * duty;
+      }
+
+      duty *= computeSoftZoneScale(pos);
+
+      if (isHardLimitHit(pos, dir)) {
+        duty = 0.0f;
+      }
+
+      duty = constrain(duty, 0.0f, 1.0f);
+
+      pwm = duty * PWM_MAX;
+      motor.setPWM(pwm);
     }
-
-    duty *= computeSoftZoneScale(pos);
-    duty = constrain(duty, 0.0f, 1.0f);
-
-    pwm = duty * PWM_MAX;
-    motor.setPWM(pwm);
   }
 
   // -----------------------------

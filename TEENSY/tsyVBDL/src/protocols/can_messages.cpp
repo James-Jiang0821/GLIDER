@@ -81,22 +81,40 @@ void packStatusControl(uint8_t *buf, const StatusControl &m)
 ------------------------------------------------------------
 STATUS_BMS
 ------------------------------------------------------------
+Encoding:
+  pack_V:       uint8 ×0.1 V     → decode: value / 10.0f
+  min/max_cell: uint8 (mV−2500)/10 → decode: value * 10 + 2500
+  pack_current: int8  ×0.5 A     → decode: value * 0.5f  (+ = discharge)
+  temp_*:       uint8 °C         → 0xFF means invalid / not connected
+------------------------------------------------------------
 */
 void packStatusBMS(uint8_t *buf, const StatusBMS &m)
 {
-    buf[0] = m.pack_mV & 0xFF;
-    buf[1] = m.pack_mV >> 8;
+    buf[0] = m.pack_V;
+    buf[1] = m.min_cell_V;
+    buf[2] = m.max_cell_V;
+    buf[3] = static_cast<uint8_t>(m.pack_current);
+    buf[4] = m.temp_internal;
+    buf[5] = m.temp_ext1;
+    buf[6] = m.temp_ext2;
+    buf[7] = m.sequence;
+}
 
-    buf[2] = m.pack_temp & 0xFF;
-    buf[3] = m.pack_temp >> 8;
 
-    buf[4] = m.bms_fault_id;   // raw TinyBMS fault code
-
-    buf[5] = 0;
-
-    buf[6] = m.sequence;
-
-    buf[7] = 0;
+/*
+------------------------------------------------------------
+STATUS_BMS_MORE
+------------------------------------------------------------
+cell_V[0..5]:  uint8 (mV−2500)/10, same encoding as min/max_cell_V
+online_status: 0=Unknown 1=Charging 2=FullyCharged
+               3=Discharging 4=Idle 5=Fault
+------------------------------------------------------------
+*/
+void packStatusBmsMore(uint8_t *buf, const StatusBmsMore &m)
+{
+    for (int i = 0; i < 6; i++) buf[i] = m.cell_V[i];
+    buf[6] = m.online_status;
+    buf[7] = m.sequence;
 }
 
 }

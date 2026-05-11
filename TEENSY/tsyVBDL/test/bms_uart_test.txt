@@ -1,0 +1,163 @@
+#include <Arduino.h>
+#include <stdint.h>
+
+#include "config/constants.hpp"
+#include "config/pin_map.hpp"
+#include "drivers/bms.hpp"
+#include "controllers/bms_manager.hpp"
+
+/*
+BMS UART hardware verification test.
+
+Uses the full BmsManager stack — same code path as main firmware.
+Prints all telemetry once per second to USB serial.
+
+Hardware:
+  Serial2 TX = pin 7  -> TinyBMS RX
+  Serial2 RX = pin 8  <- TinyBMS TX
+  Baud: 115200
+
+Copy into src/main.cpp to run.
+*/
+
+static BmsUart bmsUart({
+    .serial = &Serial2,
+    .baud   = BMS_BAUD
+});
+
+static BmsManager bmsManager;
+
+static uint32_t lastPrint = 0;
+static constexpr uint32_t PRINT_INTERVAL_MS = 1000;
+
+// ── helpers ────────────────────────────────────────────────────────────────
+
+static const char* onlineStatusName(uint16_t s)
+{
+    switch (s) {
+        case 0x0091: return "Charging";
+        case 0x0092: return "FullyCharged";
+        case 0x0093: return "Discharging";
+        case 0x0096: return "Regeneration";
+        case 0x0097: return "Idle";
+        case 0x009B: return "Fault";
+        default:     return "Unknown";
+    }
+}
+
+static void printTemp(const char* label, int16_t dC)
+{
+    Serial.print(label);
+    if (dC == -32768) {
+        Serial.print("n/c");
+    } else {
+        Serial.print(dC / 10.0f, 1);
+        Serial.print("C");
+    }
+}
+
+static void printTelemetry()
+{
+    const auto& t = bmsManager.telemetry();
+    const auto& f = bmsManager.flags();
+
+    Serial.println("─────────────────────────────");
+
+    // Link status
+    Serial.print("Link:     ");
+    if (!t.any_response) {
+        Serial.println("NO SIGNAL");
+    } else if (t.full_snapshot_ready) {
+        Serial.println("GOOD (full snapshot)");
+    } else {
+        Serial.println("PARTIAL (waiting for all cmds)");
+    }
+
+    if (!t.any_response) return;   // no point printing zeros
+
+    // Pack overview
+    Serial.print("Pack V:   "); Serial.print(t.pack_voltage_v, 3); Serial.println(" V");
+    Serial.print("Pack I:   "); Serial.print(t.pack_current_a, 3); Serial.println(" A  (+ = discharge)");
+
+    Serial.print("Min cell: "); Serial.print(t.min_cell_mv); Serial.println(" mV");
+    Serial.print("Max cell: "); Serial.print(t.max_cell_mv); Serial.println(" mV");
+
+    // Individual cells (only shown once 0x1A response arrives)
+    if (t.num_cells > 0) {
+        Serial.print("Cells:    ");
+        for (uint8_t i = 0; i < t.num_cells; i++) {
+            Serial.print(t.cell_mv[i]);
+            Serial.print("mV");
+            if (i < t.num_cells - 1) Serial.print("  ");
+        }
+        Serial.println();
+    } else {
+        Serial.println("Cells:    waiting...");
+    }
+
+    // Temperatures
+    printTemp("Temp int: ", t.pack_temp_dC);   Serial.println();
+    printTemp("Temp ext1:", t.ext1_temp_dC);   Serial.println();
+    printTemp("Temp ext2:", t.ext2_temp_dC);   Serial.println();
+
+    // Status
+    Serial.print("State:    "); Serial.println(onlineStatusName(t.online_status));
+    Serial.print("Event ID: 0x"); Serial.println(t.last_event_id, HEX);
+
+    // Fault flags
+    Serial.print("Flags:    ");
+    if (f.bms_temp_high)    Serial.print("TEMP_HIGH ");
+    if (f.bms_overcurrent)  Serial.print("OVERCURRENT ");
+    if (f.bms_switch_fault) Serial.print("SWITCH_FAULT ");
+    if (f.bms_low_voltage)  Serial.print("LOW_V ");
+    if (f.bms_high_voltage) Serial.print("HIGH_V ");
+    if (f.bms_timeout_small)Serial.print("TO_SMALL ");
+    if (f.bms_timeout_large)Serial.print("TO_LARGE ");
+    if (!f.bms_temp_high && !f.bms_overcurrent && !f.bms_switch_fault &&
+        !f.bms_low_voltage && !f.bms_high_voltage &&
+        !f.bms_timeout_small && !f.bms_timeout_large) {
+        Serial.print("none");
+    }
+    Serial.println();
+}
+
+// ── Arduino ────────────────────────────────────────────────────────────────
+
+void setup()
+{
+    Serial.begin(115200);
+    delay(1500);
+
+    // Keep motor driver off during testing
+    pinMode(PIN_MOTOR_SLP, OUTPUT);
+    digitalWrite(PIN_MOTOR_SLP, LOW);
+    pinMode(PIN_MOTOR_PWM, OUTPUT);
+    analogWrite(PIN_MOTOR_PWM, 0);
+
+    bmsManager.configure({
+        .transport           = &bmsUart,
+        .poll_interval_ms    = 140,       // 8 cmds × 140ms ≈ 1.1s full cycle
+        .response_timeout_ms = 100,
+        .max_retries         = 1,
+        .fault_confirm_ms    = 2000,
+        .timeout_small_ms    = config::BMS_TIMEOUT_SMALL_MS,
+        .timeout_large_ms    = config::BMS_TIMEOUT_LARGE_MS
+    });
+    bmsManager.begin(millis());
+
+    Serial.println("TinyBMS UART test — polling all registers via BmsManager");
+    Serial.println("Commands: 0x14 0x15 0x16 0x17 0x18 0x1A 0x1B 0x11");
+    Serial.println("Waiting for first response...");
+}
+
+void loop()
+{
+    const uint32_t now = millis();
+
+    bmsManager.update(now);
+
+    if (now - lastPrint >= PRINT_INTERVAL_MS) {
+        lastPrint = now;
+        printTelemetry();
+    }
+}

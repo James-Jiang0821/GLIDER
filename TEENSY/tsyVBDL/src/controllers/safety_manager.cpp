@@ -154,9 +154,10 @@ SafetyManager::Output SafetyManager::update(const Inputs& in, float dt)
         latchFirstHardFault(6);
     }
 
-    // 7. Position out of bounds
-    if (in.pos_est_mm < cfg_.stroke_real_min_mm ||
-        in.pos_est_mm > cfg_.stroke_real_max_mm) {
+    // 7. Position out of bounds (only checked once homed/calibrated)
+    if (in.pos_valid &&
+        (in.pos_est_mm < cfg_.stroke_real_min_mm ||
+         in.pos_est_mm > cfg_.stroke_real_max_mm)) {
 
         hardA |= can::FAULT_POS_LIMIT;
         latchFirstHardFault(7);

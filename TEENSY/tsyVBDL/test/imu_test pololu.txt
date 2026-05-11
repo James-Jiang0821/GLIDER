@@ -1,0 +1,128 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <LSM6.h>
+
+// MinIMU-9 v6 on ToF I2C port: SDA=17, SCL=16 (Wire1)
+// platformio.ini lib_deps: pololu/LSM6
+//
+// LIS3MDL has no setBus() in Pololu lib — read directly via Wire1
+
+#define LIS3MDL_ADDR  0x1E   // SA1 high (default on Pololu board)
+#define LIS3MDL_CTRL1 0x20
+#define LIS3MDL_CTRL2 0x21
+#define LIS3MDL_CTRL3 0x22
+#define LIS3MDL_OUT_X 0x28   // auto-increment: reads X,Y,Z (6 bytes)
+
+static LSM6 imu;
+
+// -------------------------------------------------------
+// LIS3MDL helpers (direct Wire1 register access)
+// -------------------------------------------------------
+bool lis3mdlWrite(uint8_t reg, uint8_t val)
+{
+    Wire1.beginTransmission(LIS3MDL_ADDR);
+    Wire1.write(reg);
+    Wire1.write(val);
+    return Wire1.endTransmission() == 0;
+}
+
+bool lis3mdlRead(float &mx, float &my, float &mz)
+{
+    Wire1.beginTransmission(LIS3MDL_ADDR);
+    Wire1.write(LIS3MDL_OUT_X | 0x80); // 0x80 = auto-increment
+    if (Wire1.endTransmission(false) != 0) return false;
+
+    Wire1.requestFrom(LIS3MDL_ADDR, 6);
+    if (Wire1.available() < 6) return false;
+
+    int16_t rx = (int16_t)(Wire1.read() | Wire1.read() << 8);
+    int16_t ry = (int16_t)(Wire1.read() | Wire1.read() << 8);
+    int16_t rz = (int16_t)(Wire1.read() | Wire1.read() << 8);
+
+    // ±4 gauss full scale: 6842 LSB/gauss
+    mx = rx / 6842.0f;
+    my = ry / 6842.0f;
+    mz = rz / 6842.0f;
+    return true;
+}
+
+bool lis3mdlInit()
+{
+    // High-performance mode, 80Hz ODR, temp comp on
+    if (!lis3mdlWrite(LIS3MDL_CTRL1, 0xFC)) return false;
+    // ±4 gauss full scale
+    lis3mdlWrite(LIS3MDL_CTRL2, 0x00);
+    // Continuous conversion
+    lis3mdlWrite(LIS3MDL_CTRL3, 0x00);
+    return true;
+}
+
+// -------------------------------------------------------
+// Setup
+// -------------------------------------------------------
+void setup()
+{
+    Serial.begin(115200);
+    while (!Serial) { delay(10); }
+    Serial.println("MinIMU-9 v6 Test");
+
+    Wire1.setSDA(17);
+    Wire1.setSCL(16);
+    Wire1.setClock(400000);
+    Wire1.begin();
+    delay(100);
+
+    // LSM6DSO init via Pololu library
+    imu.setBus(&Wire1);
+    if (!imu.init()) {
+        Serial.println("ERROR: LSM6DSO not found");
+        while (1) {}
+    }
+    imu.enableDefault();
+    Serial.println("LSM6DSO OK");
+
+    // LIS3MDL init via direct register access
+    if (!lis3mdlInit()) {
+        Serial.println("ERROR: LIS3MDL not found");
+        while (1) {}
+    }
+    Serial.println("LIS3MDL OK");
+}
+
+// -------------------------------------------------------
+// Loop
+// -------------------------------------------------------
+void loop()
+{
+    static uint32_t lastPrint = 0;
+    if (millis() - lastPrint < 200) return;  // 5Hz
+    lastPrint = millis();
+
+    imu.read();
+
+    // Accel: ±2g, 0.061 mg/LSB → convert to m/s²
+    float ax = imu.a.x * 0.061e-3f * 9.81f;
+    float ay = imu.a.y * 0.061e-3f * 9.81f;
+    float az = imu.a.z * 0.061e-3f * 9.81f;
+
+    // Roll and pitch from accelerometer
+    float roll  = atan2f(ay, az) * 180.0f / M_PI;
+    float pitch = atan2f(-ax, sqrtf(ay*ay + az*az)) * 180.0f / M_PI;
+
+    // Yaw from magnetometer — tilt compensated
+    float mx, my, mz;
+    float yaw = 0;
+    if (lis3mdlRead(mx, my, mz)) {
+        float cr = cosf(roll  * M_PI / 180.0f);
+        float sr = sinf(roll  * M_PI / 180.0f);
+        float cp = cosf(pitch * M_PI / 180.0f);
+        float sp = sinf(pitch * M_PI / 180.0f);
+        float mx_comp =  mx * cp + mz * sp;
+        float my_comp =  mx * sr * sp + my * cr - mz * sr * cp;
+        yaw = atan2f(-my_comp, mx_comp) * 180.0f / M_PI;
+    }
+
+    Serial.print("roll=");    Serial.print(roll,  1);
+    Serial.print("  pitch="); Serial.print(pitch, 1);
+    Serial.print("  yaw=");   Serial.println(yaw, 1);
+}

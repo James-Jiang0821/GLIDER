@@ -8,7 +8,7 @@
 // Notes:
 // Notes:
 // - CAN2 uses pins 0 (RX) and 1 (TX) on Teensy 4.x
-// - I2C1 uses pins 16 (SDA1) and 17 (SCL1) => Wire1
+// - I2C1 uses pins 17 (SDA1) and 16 (SCL1) => Wire1
 // - BMS UART on pins 7/8 (typical Teensy Serial2 mapping)
 // - Proximity is pull-up (likely active-low when triggered)
 
@@ -51,13 +51,13 @@ constexpr uint32_t BMS_BAUD  = 115200;
 // =====================
 // VL6180X ToF (I2C)
 // =====================
-constexpr uint8_t PIN_TOF_SCL = 16;
-constexpr uint8_t PIN_TOF_SDA = 17;
+constexpr uint8_t PIN_TOF_SCL = 16;  // SCL1
+constexpr uint8_t PIN_TOF_SDA = 17;  // SDA1
 
 // =====================
 // Leak sensor
 // =====================
-constexpr uint8_t PIN_LEAK = 18;
+constexpr uint8_t PIN_LEAK = 9;
 
 // =====================
 // Motor driver (Pololu G2 24v13)

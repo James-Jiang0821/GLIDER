@@ -37,6 +37,10 @@ public:
         uint16_t min_cell_mv = 0;
         uint16_t online_status = 0;
 
+        // Individual cell voltages in mV (up to 6 cells).
+        uint16_t cell_mv[6] = {};
+        uint8_t  num_cells = 0;
+
         // 0.1 degC units from TinyBMS INT16 register.
         int16_t pack_temp_dC = 0;
         int16_t ext1_temp_dC = -32768;
@@ -80,37 +84,40 @@ private:
         uint32_t pending_since_ms = 0;
     };
 
-    static constexpr uint8_t CMD_READ_NEWEST_EVENTS = 0x11;
-    static constexpr uint8_t CMD_READ_PACK_VOLTAGE = 0x14;
-    static constexpr uint8_t CMD_READ_PACK_CURRENT = 0x15;
-    static constexpr uint8_t CMD_READ_MAX_CELL = 0x16;
-    static constexpr uint8_t CMD_READ_MIN_CELL = 0x17;
-    static constexpr uint8_t CMD_READ_ONLINE_STATUS = 0x18;
-    static constexpr uint8_t CMD_READ_TEMPERATURES = 0x1B;
+    static constexpr uint8_t CMD_READ_NEWEST_EVENTS  = 0x11;
+    static constexpr uint8_t CMD_READ_PACK_VOLTAGE   = 0x14;
+    static constexpr uint8_t CMD_READ_PACK_CURRENT   = 0x15;
+    static constexpr uint8_t CMD_READ_MAX_CELL       = 0x16;
+    static constexpr uint8_t CMD_READ_MIN_CELL       = 0x17;
+    static constexpr uint8_t CMD_READ_ONLINE_STATUS  = 0x18;
+    static constexpr uint8_t CMD_READ_CELL_VOLTAGES  = 0x1C;
+    static constexpr uint8_t CMD_READ_TEMPERATURES   = 0x1B;
 
-    static constexpr uint8_t kPollCommands[7] = {
+    static constexpr uint8_t kPollCommands[8] = {
         CMD_READ_PACK_VOLTAGE,
         CMD_READ_PACK_CURRENT,
         CMD_READ_MAX_CELL,
         CMD_READ_MIN_CELL,
         CMD_READ_ONLINE_STATUS,
+        CMD_READ_CELL_VOLTAGES,
         CMD_READ_TEMPERATURES,
         CMD_READ_NEWEST_EVENTS
     };
 
     enum SnapshotBit : uint8_t {
-        SNAP_VOLTAGE = 1 << 0,
-        SNAP_CURRENT = 1 << 1,
+        SNAP_VOLTAGE  = 1 << 0,
+        SNAP_CURRENT  = 1 << 1,
         SNAP_MAX_CELL = 1 << 2,
         SNAP_MIN_CELL = 1 << 3,
-        SNAP_STATUS = 1 << 4,
-        SNAP_TEMPS = 1 << 5,
-        SNAP_EVENTS = 1 << 6
+        SNAP_STATUS   = 1 << 4,
+        SNAP_CELLS    = 1 << 5,
+        SNAP_TEMPS    = 1 << 6,
+        SNAP_EVENTS   = 1 << 7
     };
 
     static constexpr uint8_t SNAP_REQUIRED_MASK =
         SNAP_VOLTAGE | SNAP_CURRENT | SNAP_MAX_CELL |
-        SNAP_MIN_CELL | SNAP_STATUS | SNAP_TEMPS | SNAP_EVENTS;
+        SNAP_MIN_CELL | SNAP_STATUS | SNAP_CELLS | SNAP_TEMPS | SNAP_EVENTS;
 
     static constexpr uint16_t RX_BUF_SIZE = 384;
     static constexpr uint8_t EVENT_CACHE_SIZE = 16;

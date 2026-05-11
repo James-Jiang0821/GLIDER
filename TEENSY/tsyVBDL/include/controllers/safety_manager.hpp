@@ -55,6 +55,7 @@ public:
         float motor_duty;
 
         float pos_est_mm;
+        bool pos_valid;
         bool homing_failed;
 
         bool cmd_timeout_small;

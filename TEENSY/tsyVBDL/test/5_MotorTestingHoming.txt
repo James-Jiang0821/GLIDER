@@ -4,69 +4,102 @@
 
 #include "config/pin_map.hpp"
 #include "config/constants.hpp"
-
 #include "utils/logger.hpp"
 
 #include "drivers/enc_alt.hpp"
 #include "drivers/motor_driver.hpp"
-#include "drivers/proximity_sensor.hpp"
 #include "drivers/tof_sensor.hpp"
 #include "drivers/can_bus.hpp"
+#include "drivers/leak_sensor.hpp"
 
 #include "controllers/estimator.hpp"
 #include "controllers/pid_controller.hpp"
-#include "controllers/piston_controller.hpp"
+#include "controllers/safety_manager.hpp"
 
 #include "protocols/can_messages.hpp"
 
-// --- CAN ---
-CanFrame lastFrame{};
-bool hasLastFrame = false;
+// -----------------------------
+// CAN
+// -----------------------------
 constexpr uint8_t CAN_NODE_ID = config::NODE_ID_LEFT;
 static CanBus canBus;
-uint8_t canSequence = 0;
-uint32_t lastCanTx = 0;
-const uint32_t CAN_TX_INTERVAL_MS = 20; // 50Hz
+uint8_t canSequenceControl = 0;
+uint8_t canSequenceFault = 0;
+uint32_t lastCanTxControl = 0;
+uint32_t lastCanTxFault = 0;
+const uint32_t CAN_TX_CONTROL_INTERVAL_MS = 20;   // 50Hz
+const uint32_t CAN_TX_FAULT_INTERVAL_MS   = 500;  // 2Hz
 uint32_t lastCanRx = 0;
 const uint32_t CAN_TIMEOUT_MS = 5000;
 
-// --- State / mode ---
+// -----------------------------
+// State / mode
+// -----------------------------
 enum class ControlMode {
-  AUTO,    // local closed-loop controller using serial commands
-  MANUAL,  // direct motor jog
-  CAN      // controller driven by CAN command source
+  AUTO,
+  MANUAL,
+  CAN,
+  HOMING
 };
 
 ControlMode mode = ControlMode::MANUAL;
 
-// --- Commanded control bits (serial now, CAN later) ---
-bool cmdEnable = false;
-bool cmdHome = false;
-float target_percent = 0.0f;
-
-// --- Telemetry / runtime ---
+// -----------------------------
+// Runtime
+// -----------------------------
 float lastTofMm = 0.0f;
 float lastTofRawMm = 0.0f;
 bool lastDirectionExtend = true;
 int pwm = 0;
+int manual_pwm_cmd = 0;
 const int PWM_MAX = 255;
 uint32_t lastPrint = 0;
+
+// Control
+float target_mm_cmd = config::STROKE_HARD_MIN_MM;
+float target_mm = target_mm_cmd;
+float target_percent = 0.0f;
+bool homed = false;
+bool holding = false;
+float homingTimer_s = 0.0f;
+
+// Serial
+String cmdBuffer;
+const uint16_t CMD_BUFFER_MAX_LEN = 64;
 
 // LED
 uint32_t lastLedToggle = 0;
 bool ledOn = false;
 
-// Serial buffer
-String cmdBuffer;
-
+// CAN RX de-dup print
 struct FrameCache {
   bool valid;
   CanFrame frame;
 };
-
 FrameCache lastFrames[2048];
 
-// --- Encoder ---
+// -----------------------------
+// Fault injection flags
+// -----------------------------
+bool inj_leak = false;
+bool inj_driver_fault_raw = false;
+bool inj_cmd_timeout_small = false;
+bool inj_cmd_timeout_large = false;
+bool inj_bms_timeout_small = false;
+bool inj_bms_timeout_large = false;
+bool inj_bms_temp_high = false;
+bool inj_bms_overcurrent = false;
+bool inj_bms_switch_fault = false;
+bool inj_bms_low_voltage = false;
+bool inj_bms_high_voltage = false;
+bool inj_tof_invalid = false;
+bool inj_tof_out_of_range = false;
+bool inj_slip = false;
+bool inj_homing_failed = false;
+
+// -----------------------------
+// Drivers / controllers
+// -----------------------------
 static EncoderAlt enc({
   .channel = 2,
   .pin_a = PIN_ENC_A,
@@ -75,7 +108,6 @@ static EncoderAlt enc({
   .lead_screw_pitch_mm = config::LEAD_SCREW_MM_PER_REV
 });
 
-// --- Motor ---
 static MotorDriver motor({
   .pin_pwm = PIN_MOTOR_PWM,
   .pin_dir = PIN_MOTOR_DIR,
@@ -90,10 +122,9 @@ static MotorDriver motor({
   .adc_bits = 12
 });
 
-// --- Proximity ---
-static ProximitySensor prox(PIN_PROX, true); // active-low
+static ToFSensor tof(PIN_TOF_SDA, PIN_TOF_SCL);
+static LeakSensor leak(PIN_LEAK, true); // active HIGH
 
-// --- Estimator ---
 static Estimator estimator({
   .mm_per_count      = config::MM_PER_COUNT,
   .tof_gain          = config::TOF_FUSION_GAIN,
@@ -102,15 +133,12 @@ static Estimator estimator({
   .tof_min_valid_mm  = config::TOF_MIN_VALID_MM
 });
 
+static PIDController pid;
 Estimator::Output lastEst{};
+ToFSensor::Reading lastToF{};
 
-// --- Controller ---
-static PistonController pistonController;
-PistonController::Output lastCtrlOut{};
-PistonController::State prevCtrlState = PistonController::State::UNHOMED;
-
-// --- ToF ---
-static ToFSensor tof(PIN_TOF_SDA, PIN_TOF_SCL);
+static SafetyManager safety;
+SafetyManager::Output lastSafety{};
 
 // -----------------------------
 // Helpers
@@ -124,92 +152,154 @@ bool isFrameDifferentIgnoreSeq(const CanFrame& a, const CanFrame& b, int seqInde
     if (i == seqIndex) continue;
     if (a.data[i] != b.data[i]) return true;
   }
-
   return false;
 }
 
-bool isHomedState(PistonController::State s)
+float percentToMm(float percent)
 {
-  return s == PistonController::State::RUN ||
-         s == PistonController::State::HOLD;
+  percent = constrain(percent, 0.0f, 100.0f);
+  return config::STROKE_HARD_MIN_MM +
+         (percent / 100.0f) * config::STROKE_SPAN_MM;
+}
+
+float computeSoftZoneScale(float pos_mm)
+{
+  if (pos_mm <= config::STROKE_SOFT_START_MM) {
+    float t = (pos_mm - config::STROKE_HARD_MIN_MM) /
+              (config::STROKE_SOFT_START_MM - config::STROKE_HARD_MIN_MM);
+    t = constrain(t, 0.0f, 1.0f);
+    return config::SOFT_ZONE_MAX_DUTY +
+           t * (1.0f - config::SOFT_ZONE_MAX_DUTY);
+  }
+
+  if (pos_mm >= config::STROKE_SOFT_END_MM) {
+    float t = (config::STROKE_HARD_MAX_MM - pos_mm) /
+              (config::STROKE_HARD_MAX_MM - config::STROKE_SOFT_END_MM);
+    t = constrain(t, 0.0f, 1.0f);
+    return config::SOFT_ZONE_MAX_DUTY +
+           t * (1.0f - config::SOFT_ZONE_MAX_DUTY);
+  }
+
+  return 1.0f;
+}
+
+bool isHardLimitHit(float pos_mm, bool extending)
+{
+  if (extending) {
+    return pos_mm >= config::STROKE_HARD_MAX_MM;
+  }
+  return pos_mm <= config::STROKE_HARD_MIN_MM;
 }
 
 const char* modeName(ControlMode m)
 {
   switch (m) {
-    case ControlMode::AUTO:   return "AUTO";
-    case ControlMode::MANUAL: return "MANUAL";
-    case ControlMode::CAN:    return "CAN";
+    case ControlMode::AUTO:    return "AUTO";
+    case ControlMode::MANUAL:  return "MANUAL";
+    case ControlMode::CAN:     return "CAN";
+    case ControlMode::HOMING:  return "HOMING";
   }
   return "?";
 }
 
-const char* ctrlStateName(PistonController::State s)
+uint8_t mapSystemState()
 {
-  switch (s) {
-    case PistonController::State::UNHOMED: return "UNHOMED";
-    case PistonController::State::HOMING:  return "HOMING";
-    case PistonController::State::RUN:     return "RUN";
-    case PistonController::State::HOLD:    return "HOLD";
-    case PistonController::State::FAULT:   return "FAULT";
-  }
-  return "?";
+  if (lastSafety.hard_fault) return can::STATE_FAULT;
+  if (mode == ControlMode::MANUAL && pwm == 0) return can::STATE_HOLD;
+  if (fabs(lastEst.vel_est_mm_s) > 0.5f) return can::STATE_RUN;
+  return can::STATE_HOLD;
 }
 
-void syncHomePositionTo10mm()
+void clearInjectedFaults()
 {
-  const float home_mm = config::STROKE_HARD_MIN_MM;
-  const int32_t home_counts = lroundf(home_mm / config::MM_PER_COUNT);
+  inj_leak = false;
+  inj_driver_fault_raw = false;
+  inj_cmd_timeout_small = false;
+  inj_cmd_timeout_large = false;
+  inj_bms_timeout_small = false;
+  inj_bms_timeout_large = false;
+  inj_bms_temp_high = false;
+  inj_bms_overcurrent = false;
+  inj_bms_switch_fault = false;
+  inj_bms_low_voltage = false;
+  inj_bms_high_voltage = false;
+  inj_tof_invalid = false;
+  inj_tof_out_of_range = false;
+  inj_slip = false;
+  inj_homing_failed = false;
+}
 
-  enc.writeCounts(home_counts);
-
-  estimator.reset();
-  estimator.setPositionMm(home_mm);
-  estimator.syncEncoder(enc.readCounts());
-
-  lastEst.pos_est_mm = home_mm;
-  lastEst.vel_est_mm_s = 0.0f;
+void printInjections()
+{
+  Serial.print("INJ leak=");
+  Serial.print(inj_leak ? 1 : 0);
+  Serial.print(" drv=");
+  Serial.print(inj_driver_fault_raw ? 1 : 0);
+  Serial.print(" s_cmd=");
+  Serial.print(inj_cmd_timeout_small ? 1 : 0);
+  Serial.print(" h_cmd=");
+  Serial.print(inj_cmd_timeout_large ? 1 : 0);
+  Serial.print(" s_bms_to=");
+  Serial.print(inj_bms_timeout_small ? 1 : 0);
+  Serial.print(" h_bms_to=");
+  Serial.print(inj_bms_timeout_large ? 1 : 0);
+  Serial.print(" bms_temp=");
+  Serial.print(inj_bms_temp_high ? 1 : 0);
+  Serial.print(" bms_oc=");
+  Serial.print(inj_bms_overcurrent ? 1 : 0);
+  Serial.print(" bms_sw=");
+  Serial.print(inj_bms_switch_fault ? 1 : 0);
+  Serial.print(" bms_low=");
+  Serial.print(inj_bms_low_voltage ? 1 : 0);
+  Serial.print(" bms_high=");
+  Serial.print(inj_bms_high_voltage ? 1 : 0);
+  Serial.print(" tof_inv=");
+  Serial.print(inj_tof_invalid ? 1 : 0);
+  Serial.print(" tof_oor=");
+  Serial.print(inj_tof_out_of_range ? 1 : 0);
+  Serial.print(" slip=");
+  Serial.print(inj_slip ? 1 : 0);
+  Serial.print(" homefail=");
+  Serial.println(inj_homing_failed ? 1 : 0);
 }
 
 void printHelp()
 {
   Serial.println("\n=== Commands ===");
-  Serial.println("m          -> manual mode (direct jog)");
-  Serial.println("a          -> auto mode (local piston controller)");
-  Serial.println("c          -> can mode");
-  Serial.println("e1 / e0    -> enable / disable motor system");
-  Serial.println("h          -> start homing");
-  Serial.println("%<num>     -> set target percent (AUTO/CAN)");
-  Serial.println("p<num>     -> set PWM (manual only)");
-  Serial.println("f / b      -> direction (manual only)");
-  Serial.println("s          -> stop motor");
-  Serial.println("status     -> print status\n");
+  Serial.println("m / a / c           -> MANUAL / AUTO / CAN mode");
+  Serial.println("%<num>              -> set target percent");
+  Serial.println("p<num>              -> set PWM (manual)");
+  Serial.println("f / b / s           -> direction extend/retract / stop");
+  Serial.println("h                   -> auto home via ToF (retracts to 10mm)");
+  Serial.println("z                   -> mark homed at 10 mm");
+  Serial.println("recover             -> safety.reset() (clears latched faults)");
+  Serial.println("inj0                -> clear all injected faults");
+  Serial.println("status              -> print status");
+  Serial.println("inj                 -> print injection states");
+  Serial.println("-- hard fault injections --");
+  Serial.println("leak1/leak0  drv1/drv0  hcmd1/hcmd0  hbto1/hbto0");
+  Serial.println("htemp1/htemp0  hoc1/hoc0  hsw1/hsw0  hhome1/hhome0");
+  Serial.println("-- soft fault injections --");
+  Serial.println("scmd1/scmd0  sbto1/sbto0  sblow1/sblow0  sbhigh1/sbhigh0");
+  Serial.println("stof1/stof0  soor1/soor0  sslip1/sslip0");
+  Serial.println();
 }
 
 void printStatus(const Estimator::Output& est)
 {
-  const float error = lastCtrlOut.target_mm - est.pos_est_mm;
+  const float error = target_mm - est.pos_est_mm;
+  const bool leak_raw_now = leak.isLeak();
+  const bool flt_active = motor.faultActive();
+  const float motor_current_a = motor.readCurrentA();
 
   Serial.print("mode=");
   Serial.print(modeName(mode));
 
-  Serial.print("  state=");
-  Serial.print(ctrlStateName(lastCtrlOut.state));
-
-  Serial.print("  en=");
-  Serial.print(cmdEnable ? "1" : "0");
-
-  Serial.print("  homecmd=");
-  Serial.print(cmdHome ? "1" : "0");
-
   Serial.print("  mm=");
   Serial.print(est.pos_est_mm, 3);
 
-  Serial.print("  tof=");
-  Serial.print(lastTofMm, 1);
-
   Serial.print("  target=");
-  Serial.print(lastCtrlOut.target_mm, 2);
+  Serial.print(target_mm, 2);
 
   Serial.print("  target%=");
   Serial.print(target_percent, 1);
@@ -223,15 +313,42 @@ void printStatus(const Estimator::Output& est)
   Serial.print("  pwm=");
   Serial.print(pwm);
 
-  Serial.print("  prox=");
-  Serial.print(prox.isTriggered() ? "1" : "0");
+  Serial.print("  flt=");
+  Serial.print(flt_active ? "Y" : "N");
+
+  Serial.print("  iA=");
+  Serial.print(motor_current_a, 2);
+
+  Serial.print("  tof=");
+  Serial.print(lastTofMm, 1);
+
+  Serial.print("  tofSt=");
+  Serial.print(lastToF.status);
+
+  Serial.print("  tofV=");
+  Serial.print(lastToF.valid ? "Y" : "N");
+
+  Serial.print("  tofF=");
+  Serial.print(lastToF.fresh ? "Y" : "N");
+
+  Serial.print("  homed=");
+  Serial.print(homed ? "Y" : "N");
+
+  Serial.print("  leak=");
+  Serial.print(leak_raw_now ? "1" : "0");
+
+  Serial.print("  HF_A=0x");
+  Serial.print(lastSafety.hard_fault_a, HEX);
+  Serial.print(" HF_B=0x");
+  Serial.print(lastSafety.hard_fault_b, HEX);
+  Serial.print(" SF=0x");
+  Serial.print(lastSafety.soft_fault_bits, HEX);
+  Serial.print(" first=");
+  Serial.print(lastSafety.first_hard_fault);
 
   Serial.println();
 }
 
-// -----------------------------
-// Command handling
-// -----------------------------
 void handleCommand(String cmd)
 {
   cmd.trim();
@@ -239,100 +356,193 @@ void handleCommand(String cmd)
 
   if (cmd == "m") {
     mode = ControlMode::MANUAL;
+    manual_pwm_cmd = 0;
     motor.setPWM(0);
     pwm = 0;
     Serial.println("MANUAL mode");
+    return;
   }
-  else if (cmd == "a") {
+
+  if (cmd == "a") {
+    if (!homed) {
+      Serial.println("ERROR: Not homed");
+      return;
+    }
     mode = ControlMode::AUTO;
+    target_mm = lastEst.pos_est_mm;
+    target_mm_cmd = target_mm;
+    pid.reset();
+    holding = false;
     Serial.println("AUTO mode");
+    return;
   }
-  else if (cmd == "c") {
+
+  if (cmd == "c") {
+    if (!homed) {
+      Serial.println("ERROR: Not homed");
+      return;
+    }
     mode = ControlMode::CAN;
     lastCanRx = millis();
+    target_mm = lastEst.pos_est_mm;
+    target_mm_cmd = target_mm;
+    pid.reset();
+    holding = false;
     Serial.println("CAN mode");
+    return;
   }
-  else if (cmd == "e1") {
-    cmdEnable = true;
-    motor.enable();
-    Serial.println("ENABLE=1");
-  }
-  else if (cmd == "e0") {
-    cmdEnable = false;
-    cmdHome = false;
-    motor.setPWM(0);
-    motor.disable();
-    pwm = 0;
-    Serial.println("ENABLE=0");
-  }
-  else if (cmd == "h") {
-    if (!cmdEnable) {
-      Serial.println("ERROR: enable first");
-      return;
-    }
 
-    cmdHome = true;
-    Serial.println("HOME=1");
-  }
-  else if (cmd.startsWith("%")) {
-    const float pct = cmd.substring(1).toFloat();
+  if (cmd.startsWith("%")) {
+    float pct = cmd.substring(1).toFloat();
     target_percent = constrain(pct, 0.0f, 100.0f);
-
+    target_mm_cmd = percentToMm(target_percent);
     Serial.print("Target: ");
-    Serial.print(target_percent, 1);
-    Serial.println("%");
+    Serial.print(target_percent);
+    Serial.print("% -> ");
+    Serial.println(target_mm_cmd);
+    return;
   }
-  else if (cmd.startsWith("p")) {
-    if (mode != ControlMode::MANUAL) return;
-    if (!cmdEnable) {
-      Serial.println("ERROR: enable first");
-      return;
-    }
 
-    pwm = constrain(cmd.substring(1).toInt(), 0, 255);
-    motor.setPWM(pwm);
+  if (cmd.startsWith("p")) {
+    if (mode == ControlMode::AUTO || mode == ControlMode::CAN) return;
+    manual_pwm_cmd = constrain(cmd.substring(1).toInt(), 0, 255);
+    return;
   }
-  else if (cmd == "f") {
-    if (mode != ControlMode::MANUAL) return;
-    if (!cmdEnable) {
-      Serial.println("ERROR: enable first");
-      return;
-    }
 
+  if (cmd == "f") {
+    if (mode == ControlMode::AUTO || mode == ControlMode::CAN) return;
     motor.setDirection(MotorDriver::Direction::EXTEND);
     lastDirectionExtend = true;
+    return;
   }
-  else if (cmd == "b") {
-    if (mode != ControlMode::MANUAL) return;
-    if (!cmdEnable) {
-      Serial.println("ERROR: enable first");
-      return;
-    }
 
+  if (cmd == "b") {
+    if (mode == ControlMode::AUTO || mode == ControlMode::CAN) return;
     motor.setDirection(MotorDriver::Direction::RETRACT);
     lastDirectionExtend = false;
+    return;
   }
-  else if (cmd == "s") {
+
+  if (cmd == "s") {
+    manual_pwm_cmd = 0;
     pwm = 0;
     motor.setPWM(0);
+    return;
   }
-  else if (cmd == "status") {
+
+  if (cmd == "z") {
+    float home_mm = 10.0f;
+    int32_t home_counts = roundf(home_mm / config::MM_PER_COUNT);
+    enc.writeCounts(home_counts);
+    estimator.reset();
+    estimator.setPositionMm(home_mm);
+    estimator.syncEncoder(enc.readCounts());
+    pid.reset();
+    homed = true;
+    Serial.println("HOMED at 10mm");
+    return;
+  }
+
+  if (cmd == "recover") {
+    safety.reset();
+    lastSafety = {};
+    Serial.println("Safety manager reset requested");
+    return;
+  }
+
+  if (cmd == "inj0") {
+    clearInjectedFaults();
+    Serial.println("All injections cleared");
+    return;
+  }
+
+  if (cmd == "inj") {
+    printInjections();
+    return;
+  }
+
+  if (cmd == "status") {
     printStatus(lastEst);
+    return;
   }
+
+  // Hard injections
+  if (cmd == "leak1") { inj_leak = true; return; }
+  if (cmd == "leak0") { inj_leak = false; return; }
+  if (cmd == "drv1") { inj_driver_fault_raw = true; return; }
+  if (cmd == "drv0") { inj_driver_fault_raw = false; return; }
+  if (cmd == "hcmd1") { inj_cmd_timeout_large = true; return; }
+  if (cmd == "hcmd0") { inj_cmd_timeout_large = false; return; }
+  if (cmd == "hbto1") { inj_bms_timeout_large = true; return; }
+  if (cmd == "hbto0") { inj_bms_timeout_large = false; return; }
+  if (cmd == "htemp1") { inj_bms_temp_high = true; return; }
+  if (cmd == "htemp0") { inj_bms_temp_high = false; return; }
+  if (cmd == "hoc1") { inj_bms_overcurrent = true; return; }
+  if (cmd == "hoc0") { inj_bms_overcurrent = false; return; }
+  if (cmd == "hsw1") { inj_bms_switch_fault = true; return; } 
+  if (cmd == "hsw0") { inj_bms_switch_fault = false; return; }
+  if (cmd == "hhome1") { inj_homing_failed = true; return; }
+  if (cmd == "hhome0") { inj_homing_failed = false; return; }
+
+  // Soft injections
+  if (cmd == "scmd1") { inj_cmd_timeout_small = true; return; }
+  if (cmd == "scmd0") { inj_cmd_timeout_small = false; return; }
+  if (cmd == "sbto1") { inj_bms_timeout_small = true; return; }
+  if (cmd == "sbto0") { inj_bms_timeout_small = false; return; }
+  if (cmd == "sblow1") { inj_bms_low_voltage = true; return; }
+  if (cmd == "sblow0") { inj_bms_low_voltage = false; return; }
+  if (cmd == "sbhigh1") { inj_bms_high_voltage = true; return; }
+  if (cmd == "sbhigh0") { inj_bms_high_voltage = false; return; }
+  if (cmd == "stof1") { inj_tof_invalid = true; return; }
+  if (cmd == "stof0") { inj_tof_invalid = false; return; }
+  if (cmd == "soor1") { inj_tof_out_of_range = true; return; }
+  if (cmd == "soor0") { inj_tof_out_of_range = false; return; }
+  if (cmd == "sslip1") { inj_slip = true; return; }
+  if (cmd == "sslip0") { inj_slip = false; return; }
+
+  if (cmd == "h") {
+    if (mode == ControlMode::AUTO || mode == ControlMode::CAN) {
+      Serial.println("ERROR: Switch to MANUAL first (send 'm')");
+      return;
+    }
+    motor.setPWM(0);
+    motor.setDirection(MotorDriver::Direction::RETRACT);
+    lastDirectionExtend = false;
+    manual_pwm_cmd = 0;
+    pwm = 0;
+    homingTimer_s = 0.0f;
+    homed = false;
+    holding = false;
+    mode = ControlMode::HOMING;
+    Serial.println("HOMING: retracting until ToF reads 10mm...");
+    return;
+  }
+
+  if (cmd == "help") {
+    printHelp();
+    return;
+  }
+
+  Serial.print("Unknown command: ");
+  Serial.println(cmd);
 }
 
 void readSerialCommands()
 {
   while (Serial.available()) {
     char c = Serial.read();
-
     if (c == '\n' || c == '\r') {
       if (cmdBuffer.length() > 0) {
         handleCommand(cmdBuffer);
         cmdBuffer = "";
       }
     } else {
-      cmdBuffer += c;
+      if (cmdBuffer.length() < CMD_BUFFER_MAX_LEN) {
+        cmdBuffer += c;
+      } else {
+        cmdBuffer = "";
+        Serial.println("ERROR: Command too long");
+      }
     }
   }
 }
@@ -340,7 +550,6 @@ void readSerialCommands()
 void handleCan()
 {
   CanFrame frame;
-
   while (canBus.read(frame)) {
     constexpr int SEQ_INDEX = 6;
     uint16_t id = frame.id & 0x7FF;
@@ -353,7 +562,6 @@ void handleCan()
       Serial.print(" len=");
       Serial.print(frame.len);
       Serial.print(" data=");
-
       for (uint8_t i = 0; i < frame.len; i++) {
         Serial.print(frame.data[i]);
         Serial.print(" ");
@@ -370,17 +578,20 @@ void handleCan()
       can::CmdSetpoint msg;
       can::unpackCmdSetpoint(frame.data, msg);
 
-      if (mode != ControlMode::CAN) {
-        continue;
+      if (mode != ControlMode::CAN) continue;
+      if (!homed) continue;
+
+      float pct = constrain(msg.stroke_percent, 0, 100);
+      static uint8_t last_pct = 255;
+
+      if (msg.stroke_percent != last_pct) {
+        pid.reset();
+        holding = false;
+        last_pct = msg.stroke_percent;
       }
 
-      // map CAN command bits directly onto controller command bits
-      cmdEnable = (msg.command_mode & can::CMD_MOTOR_ENABLE) != 0;
-      if (msg.command_mode & can::CMD_START_HOMING) {
-        cmdHome = true;
-      }
-
-      target_percent = constrain(msg.stroke_percent, 0, 100);
+      target_percent = pct;
+      target_mm_cmd = percentToMm(pct);
     }
   }
 }
@@ -388,51 +599,26 @@ void handleCan()
 uint8_t buildControlFlags()
 {
   uint8_t flags = 0;
-
-  if (prox.isTriggered()) {
-    flags |= can::FLAG_PROX;
-  }
-
-  if (motor.faultActive()) {
-    flags |= can::FLAG_DRIVER_FLT;
-  }
-
-  if (isHomedState(lastCtrlOut.state)) {
-    flags |= can::FLAG_HOMED;
-  }
-
-  if (lastCtrlOut.state == PistonController::State::RUN) {
-    flags |= can::FLAG_MOVING;
-  }
-
-  if (motor.enabled()) {
-    flags |= can::FLAG_MOTOR_EN;
-  }
-
-  if (lastDirectionExtend) {
-    flags |= can::FLAG_DIR;
-  }
-
+  if (homed) flags |= can::FLAG_HOMED;
+  if (fabs(lastEst.vel_est_mm_s) > 0.5f) flags |= can::FLAG_MOVING;
+  if (motor.enabled()) flags |= can::FLAG_MOTOR_EN;
+  if (lastDirectionExtend) flags |= can::FLAG_DIR;
+  if (motor.faultActive() || inj_driver_fault_raw) flags |= can::FLAG_DRIVER_FLT;
+  if (leak.isLeak() || inj_leak) flags |= can::FLAG_LEAK;
   return flags;
 }
 
 void sendStatusControl()
 {
   can::StatusControl msg{};
-
-  msg.est_position_01mm =
-    (uint16_t)constrain(lastEst.pos_est_mm * 100.0f, 0, 65535);
-
-  msg.tof_position_mm =
-    (uint16_t)constrain(lastTofMm, 0, 65535);
-
+  msg.est_position_01mm = (uint16_t)constrain(lastEst.pos_est_mm * 100.0f, 0, 65535);
+  msg.tof_position_mm = (uint16_t)constrain(lastTofMm, 0, 65535);
   msg.flags = buildControlFlags();
   msg.pwm = (uint8_t)pwm;
-  msg.sequence = canSequence++;
+  msg.sequence = canSequenceControl++;
 
-  const float currentA = motor.readCurrentA();
-  msg.motor_current =
-    (int8_t)constrain(currentA * 10.0f, -127, 127);
+  float currentA = motor.readCurrentA();
+  msg.motor_current = (int8_t)constrain(currentA * 10.0f, -127, 127);
 
   uint8_t buf[8];
   can::packStatusControl(buf, msg);
@@ -440,12 +626,82 @@ void sendStatusControl()
   CanFrame frame;
   frame.id = can::STATUS_CONTROL_BASE + CAN_NODE_ID;
   frame.len = 8;
+  for (int i = 0; i < 8; i++) frame.data[i] = buf[i];
+  canBus.write(frame);
+}
 
-  for (int i = 0; i < 8; i++) {
-    frame.data[i] = buf[i];
+void sendStatusFault()
+{
+  can::StatusFault msg{};
+  msg.hard_fault_a = lastSafety.hard_fault_a;
+  msg.hard_fault_b = lastSafety.hard_fault_b;
+  msg.soft_fault = lastSafety.soft_fault_bits;
+  msg.first_hard_fault = lastSafety.first_hard_fault;
+  msg.state = mapSystemState();
+  msg.sequence = canSequenceFault++;
+
+  uint8_t buf[8];
+  can::packStatusFault(buf, msg);
+
+  CanFrame frame;
+  frame.id = can::STATUS_FAULT_BASE + CAN_NODE_ID; // e.g. 0x051 for node 1
+  frame.len = 8;
+  for (int i = 0; i < 8; i++) frame.data[i] = buf[i];
+  canBus.write(frame);
+}
+
+// -----------------------------
+// Homing (ToF-based)
+// -----------------------------
+void handleHoming(float dt)
+{
+  homingTimer_s += dt;
+
+  if (homingTimer_s > config::HOMING_TIMEOUT_S) {
+    motor.setPWM(0);
+    pwm = 0;
+    mode = ControlMode::MANUAL;
+    Serial.println("HOMING TIMEOUT - aborted");
+    return;
   }
 
-  canBus.write(frame);
+  // Wait for a plausible ToF reading before moving
+  if (lastTofMm < config::TOF_MIN_VALID_MM) {
+    motor.setPWM(0);
+    pwm = 0;
+    return;
+  }
+
+  // Home condition: ToF at or inside the hard minimum
+  if (lastTofMm <= config::STROKE_HARD_MIN_MM) {
+    motor.setPWM(0);
+    pwm = 0;
+
+    float home_mm = config::STROKE_HARD_MIN_MM;
+    int32_t home_counts = (int32_t)roundf(home_mm / config::MM_PER_COUNT);
+    enc.writeCounts(home_counts);
+    estimator.reset();
+    estimator.setPositionMm(home_mm);
+    estimator.syncEncoder(enc.readCounts());
+    pid.reset();
+
+    homed = true;
+    mode = ControlMode::MANUAL;
+
+    Serial.print("HOMED - ToF=");
+    Serial.print(lastTofMm, 1);
+    Serial.println("mm, encoder set to 10mm");
+    return;
+  }
+
+  // Soft zone scales duty down as we approach 10mm (10-20mm zone)
+  float scale = computeSoftZoneScale(lastTofMm);
+  float duty  = config::HOMING_PWM * scale;
+  pwm = constrain((int)(duty * PWM_MAX), 1, PWM_MAX);
+
+  motor.setDirection(MotorDriver::Direction::RETRACT);
+  lastDirectionExtend = false;
+  motor.setPWM(pwm);
 }
 
 // -----------------------------
@@ -455,36 +711,27 @@ void setup()
 {
   Serial.begin(115200);
   logger::begin(115200);
+  cmdBuffer.reserve(CMD_BUFFER_MAX_LEN);
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
   enc.begin();
-  prox.begin(true);
+  leak.begin(false); // Blue Robotics SOS style output: active high
 
   estimator.reset();
   estimator.syncEncoder(enc.readCounts());
 
-  tof.begin(Wire1);
+  if (!tof.begin(Wire1)) {
+    Serial.println("WARN: ToF init failed");
+  } else {
+    Serial.println("ToF init OK");
+  }
 
   motor.begin();
-  motor.disable(); // start in hibernation
+  motor.enable();
 
-  pistonController.configure({
-    .stroke_min_mm        = config::STROKE_HARD_MIN_MM,
-    .stroke_max_mm        = config::STROKE_HARD_MAX_MM,
-    .soft_start_mm        = config::STROKE_SOFT_START_MM,
-    .soft_end_mm          = config::STROKE_SOFT_END_MM,
-    .soft_zone_max_duty   = config::SOFT_ZONE_MAX_DUTY,
-    .min_duty             = config::MIN_DUTY,
-    .pos_tol_mm           = config::POS_TOL_MM,
-    .drift_restart_mm     = config::DRIFT_RESTART_MM,
-    .homing_pwm           = config::HOMING_PWM,
-    .homing_backoff_duty  = config::HOMING_BACKOFF_DUTY,
-    .homing_timeout_s     = config::HOMING_TIMEOUT_S
-  });
-
-  pistonController.configurePID({
+  pid.configure({
     config::PID_KP,
     config::PID_KI,
     config::PID_KD,
@@ -492,9 +739,20 @@ void setup()
     config::PID_OUT_LIMIT
   });
 
-  pistonController.reset();
-  lastCtrlOut.state = PistonController::State::UNHOMED;
-  lastCtrlOut.target_mm = config::STROKE_HARD_MIN_MM;
+  safety.configure({
+    .overcurrent_hard_limit_a = config::OVERCURRENT_HARD_LIMIT_A,
+    .overcurrent_confirm_s    = config::OVERCURRENT_CONFIRM_S,
+    .stall_current_a          = config::STALL_CURRENT_A,
+    .stall_min_duty           = config::STALL_MIN_DUTY,
+    .stall_pos_eps_mm         = config::STALL_POS_EPS_MM,
+    .stall_confirm_s          = config::STALL_CONFIRM_S,
+    .bms_temp_confirm_s       = config::BMS_TEMP_CONFIRM_S,
+    .stroke_real_min_mm       = config::STROKE_REAL_MIN_MM,
+    .stroke_real_max_mm       = config::STROKE_REAL_MAX_MM,
+    .leak_debounce_s          = config::LEAK_DEBOUNCE_S,
+    .driver_fault_debounce_s  = config::DRIVER_FAULT_DEBOUNCE_S
+  });
+  safety.reset();
 
   canBus.begin(500000, PIN_CAN_R, PIN_CAN_D);
 
@@ -506,11 +764,9 @@ void setup()
 // -----------------------------
 void loop()
 {
-  const uint32_t now = millis();
+  uint32_t now = millis();
 
-  // -----------------------------
-  // LED toggle
-  // -----------------------------
+  // LED heartbeat
   if (!ledOn && (now - lastLedToggle >= 5000)) {
     digitalWrite(LED_BUILTIN, HIGH);
     ledOn = true;
@@ -521,147 +777,206 @@ void loop()
     ledOn = false;
   }
 
-  // -----------------------------
-  // Time delta
-  // -----------------------------
+  // dt
   static uint32_t lastTime = 0;
-  const float dt = (lastTime == 0) ? 0.0f :
-                   (now - lastTime) / 1000.0f;
+  float dt = (lastTime == 0) ? 0.0f : (now - lastTime) / 1000.0f;
   lastTime = now;
 
-  // -----------------------------
-  // Read encoder
-  // -----------------------------
-  const int32_t counts = enc.readCounts();
-
-  // -----------------------------
-  // Read ToF
-  // -----------------------------
-  auto tof_reading = tof.read();
-  lastTofRawMm = tof_reading.mm;
-
-  const bool tof_valid = tof_reading.valid && tof_reading.fresh;
-  if (tof_valid) {
-    lastTofMm = tof_reading.mm;
+  // If the loop hiccups badly, drop commanded output immediately.
+  if (dt > 0.2f) {
+    manual_pwm_cmd = 0;
+    pwm = 0;
+    holding = false;
+    pid.reset();
+    motor.setPWM(0);
   }
 
-  // -----------------------------
-  // Estimator
-  // -----------------------------
+  // Sensors
+  int32_t counts = enc.readCounts();
+
+  lastToF = tof.read();
+  lastTofRawMm = lastToF.mm;
+  lastTofMm = lastToF.mm;
+
+  // Estimator fuses only on fresh + valid samples.
+  bool tof_valid_estimator = lastToF.valid && lastToF.fresh;
+
   lastEst = estimator.update(
     counts,
-    false, // keep same behavior for now
-    tof_reading.mm,
+    tof_valid_estimator,
+    lastToF.mm,
     dt
   );
 
-  // -----------------------------
   // Inputs
-  // -----------------------------
   readSerialCommands();
   handleCan();
 
-  // -----------------------------
-  // CAN timeout safety
-  // -----------------------------
+  // CAN timeout
   if (mode == ControlMode::CAN &&
       (millis() - lastCanRx > CAN_TIMEOUT_MS)) {
-
-    cmdEnable = false;
-    cmdHome = false;
-
     motor.setPWM(0);
-    motor.disable();
-
+    manual_pwm_cmd = 0;
     pwm = 0;
+    holding = false;
     mode = ControlMode::MANUAL;
-
     Serial.println("CAN TIMEOUT");
   }
 
   // -----------------------------
-  // MANUAL mode
+  // Motion logic
   // -----------------------------
-  if (mode == ControlMode::MANUAL) {
-    if (!cmdEnable) {
-      motor.setPWM(0);
-      motor.disable();
-      pwm = 0;
+  if (mode == ControlMode::HOMING) {
+    handleHoming(dt);
+  } else if (mode == ControlMode::MANUAL) {
+    float pos = lastEst.pos_est_mm;
+    bool extending = lastDirectionExtend;
+
+    float duty = static_cast<float>(manual_pwm_cmd) / static_cast<float>(PWM_MAX);
+    duty *= computeSoftZoneScale(pos);
+
+    if (isHardLimitHit(pos, extending)) {
+      duty = 0.0f;
+    }
+
+    duty = constrain(duty, 0.0f, 1.0f);
+
+    pwm = static_cast<int>(roundf(duty * static_cast<float>(PWM_MAX)));
+
+    motor.setDirection(extending ?
+      MotorDriver::Direction::EXTEND :
+      MotorDriver::Direction::RETRACT);
+    motor.setPWM(pwm);
+  } else if (mode == ControlMode::AUTO || mode == ControlMode::CAN) {
+    float pos = lastEst.pos_est_mm;
+    float vel = lastEst.vel_est_mm_s;
+
+    float max_step = 40.0f * dt;
+    float delta = target_mm_cmd - target_mm;
+
+    if (fabs(delta) > max_step) {
+      target_mm += (delta > 0 ? max_step : -max_step);
     } else {
-      motor.enable();
+      target_mm = target_mm_cmd;
+    }
+
+    target_mm = constrain(target_mm,
+                          config::STROKE_HARD_MIN_MM,
+                          config::STROKE_HARD_MAX_MM);
+
+    float error = target_mm - pos;
+    bool skipPid = false;
+
+    if (holding) {
+      if (fabs(error) > config::DRIFT_RESTART_MM) {
+        holding = false;
+      } else {
+        pwm = 0;
+        motor.setPWM(0);
+        skipPid = true;
+      }
+    }
+
+    if (!skipPid) {
+      bool near_target = fabs(error) <= config::POS_TOL_MM;
+      bool slow = fabs(vel) < 0.5f;
+      bool not_pushing_toward_target =
+        (error > 0 && vel <= 0) ||
+        (error < 0 && vel >= 0);
+
+      if (near_target && slow && not_pushing_toward_target) {
+        pwm = 0;
+        motor.setPWM(0);
+        holding = true;
+        skipPid = true;
+      }
+    }
+
+    if (!skipPid) {
+      float effort = pid.update(target_mm, pos, vel, dt);
+      bool dir = (effort > 0);
+      lastDirectionExtend = dir;
+
+      motor.setDirection(dir ?
+        MotorDriver::Direction::EXTEND :
+        MotorDriver::Direction::RETRACT);
+
+      float duty = fabs(effort);
+      if (duty > 0.0f) {
+        duty = config::MIN_DUTY +
+               (1.0f - config::MIN_DUTY) * duty;
+      }
+
+      duty *= computeSoftZoneScale(pos);
+      if (isHardLimitHit(pos, dir)) {
+        duty = 0.0f;
+      }
+
+      duty = constrain(duty, 0.0f, 1.0f);
+      pwm = duty * PWM_MAX;
+      motor.setPWM(pwm);
     }
   }
 
   // -----------------------------
-  // AUTO / CAN controller path
+  // Build Safety inputs + update
   // -----------------------------
-  if (mode == ControlMode::AUTO || mode == ControlMode::CAN) {
+  SafetyManager::Inputs sin{};
+  sin.leak_raw = leak.isLeak() || inj_leak;
+  sin.driver_fault_raw = motor.faultActive() || inj_driver_fault_raw;
 
-    if (cmdEnable) {
+  sin.motor_current_a = motor.readCurrentA();
+  sin.motor_enabled = motor.enabled();
+  sin.motor_duty = constrain((float)pwm / (float)PWM_MAX, 0.0f, 1.0f);
+
+  sin.pos_est_mm = lastEst.pos_est_mm;
+  sin.pos_valid  = homed;
+  sin.homing_failed = inj_homing_failed;
+
+  sin.cmd_timeout_small = inj_cmd_timeout_small;
+  sin.cmd_timeout_large = inj_cmd_timeout_large;
+
+  sin.bms_timeout_small = inj_bms_timeout_small;
+  sin.bms_timeout_large = inj_bms_timeout_large;
+  sin.bms_temp_high = inj_bms_temp_high;
+  sin.bms_overcurrent = inj_bms_overcurrent;
+  sin.bms_switch_fault = inj_bms_switch_fault;
+  sin.bms_low_voltage = inj_bms_low_voltage;
+  sin.bms_high_voltage = inj_bms_high_voltage;
+
+  sin.tof_valid = inj_tof_invalid ? false : lastToF.valid;
+  sin.tof_out_of_range = inj_tof_out_of_range;
+  sin.slip_detected = inj_slip || lastEst.slip_detected;
+
+  lastSafety = safety.update(sin, dt);
+
+  // Hard fault response: stop motor immediately
+  if (lastSafety.hard_fault) {
+    motor.setPWM(0);
+    motor.disable();
+    manual_pwm_cmd = 0;
+    pwm = 0;
+  } else {
+    if (!motor.enabled()) {
       motor.enable();
-    } else {
-      motor.setPWM(0);
-      motor.disable();
-      pwm = 0;
-    }
-
-    prevCtrlState = lastCtrlOut.state;
-
-    PistonController::Inputs in{};
-    in.pos_est_mm     = lastEst.pos_est_mm;
-    in.vel_est_mm_s   = lastEst.vel_est_mm_s;
-    in.prox_triggered = prox.isTriggered();
-
-    in.hard_fault = motor.faultActive();
-    in.soft_fault = false;
-
-    in.cmd_enable = cmdEnable;
-    in.cmd_home   = cmdHome;
-
-    in.target_percent = target_percent;
-
-    lastCtrlOut = pistonController.update(in, dt);
-
-    // one-shot the home request once controller has accepted it
-    if (lastCtrlOut.state == PistonController::State::HOMING) {
-      cmdHome = false;
-    }
-
-    // homing completion → align encoder/estimator to 10 mm
-    if (prevCtrlState == PistonController::State::HOMING &&
-        lastCtrlOut.state == PistonController::State::HOLD) {
-      syncHomePositionTo10mm();
-      Serial.println("HOMED at 10mm");
-    }
-
-    // fault handling
-    if (lastCtrlOut.state == PistonController::State::FAULT) {
-      motor.setPWM(0);
-      motor.disable();
-      pwm = 0;
-    } else {
-      lastDirectionExtend = lastCtrlOut.dir_extend;
-
-      motor.setDirection(lastCtrlOut.dir_extend
-        ? MotorDriver::Direction::EXTEND
-        : MotorDriver::Direction::RETRACT);
-
-      pwm = (int)lroundf(lastCtrlOut.duty * PWM_MAX);
-      pwm = constrain(pwm, 0, PWM_MAX);
-      motor.setPWM(pwm);
     }
   }
 
   // -----------------------------
   // CAN TX
   // -----------------------------
-  if (now - lastCanTx >= CAN_TX_INTERVAL_MS) {
-    lastCanTx = now;
+  if (now - lastCanTxControl >= CAN_TX_CONTROL_INTERVAL_MS) {
+    lastCanTxControl = now;
     sendStatusControl();
   }
 
+  if (now - lastCanTxFault >= CAN_TX_FAULT_INTERVAL_MS) {
+    lastCanTxFault = now;
+    sendStatusFault();
+  }
+
   // -----------------------------
-  // STATUS
+  // Status print
   // -----------------------------
   if (now - lastPrint >= 2000) {
     lastPrint = now;

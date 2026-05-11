@@ -38,8 +38,11 @@ private:
   int scl_pin_;
 
   bool inited_ = false;
+  bool continuous_started_ = false;
   uint16_t last_valid_mm_ = 0;
+  uint8_t last_status_ = 0xFF;
+  uint16_t no_ready_count_ = 0;
   uint16_t min_valid_mm_  = 8;
 
-  float offset_mm_ = 0.0f; // private correction
+  float offset_mm_ = 0.0f; // private correction around 3mm
 };

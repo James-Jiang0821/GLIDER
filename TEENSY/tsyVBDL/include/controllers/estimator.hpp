@@ -10,7 +10,8 @@ public:
         float recovery_gain;
         float slip_detect_mm;
         float tof_min_valid_mm;
-        // float tof_offset_mm;
+        bool  tof_only = false;  // true = no encoder, ToF is sole position source
+        float tof_filter_alpha = 0.3f; // EMA smoothing for tof_only mode (0=max smooth, 1=raw)
     };
 
     struct Output {
@@ -51,4 +52,7 @@ private:
     uint16_t last_tof_mm_ = 0;
     bool last_tof_valid_ = false;
     bool slip_detected_ = false;
+
+    float tof_filtered_mm_ = 0.0f;
+    bool  tof_filter_init_ = false;
 };

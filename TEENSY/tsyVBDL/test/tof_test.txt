@@ -7,10 +7,22 @@ static ToFSensor tof(PIN_TOF_SDA, PIN_TOF_SCL);
 
 void setup() {
     logger::begin(115200);
+    while (!Serial) { delay(10); }
     LOGI(F("ToF Test, improved driver"));
 
+    // I2C scan — VL6180X should appear at 0x29
     Wire1.setSDA(PIN_TOF_SDA);
     Wire1.setSCL(PIN_TOF_SCL);
+    Wire1.begin();
+    Serial.println("Scanning Wire1...");
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire1.beginTransmission(addr);
+        if (Wire1.endTransmission() == 0) {
+            Serial.print("  Found device at 0x");
+            Serial.println(addr, HEX);
+        }
+    }
+    Serial.println("Scan done.");
 
     if (!tof.begin(Wire1)) {
         LOGE(F("ToF begin() failed."));

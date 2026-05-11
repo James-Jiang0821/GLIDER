@@ -43,16 +43,16 @@ constexpr uint32_t PWM_FREQ_HZ = 25000;      // Motor PWM frequency
    STROKE GEOMETRY
 ---------------------------------------------------------- */
 
-constexpr float STROKE_REAL_MIN_MM = 0.0f;
+constexpr float STROKE_REAL_MIN_MM = 8.0f;
 constexpr float STROKE_REAL_MAX_MM = 150.0f;
 
 // usable control range
 constexpr float STROKE_HARD_MIN_MM = 10.0f;
-constexpr float STROKE_HARD_MAX_MM = 145.0f;
+constexpr float STROKE_HARD_MAX_MM = 140.0f;
 
 // soft zones
 constexpr float STROKE_SOFT_START_MM = 20.0f;
-constexpr float STROKE_SOFT_END_MM   = 135.0f;
+constexpr float STROKE_SOFT_END_MM   = 130.0f;
 
 // stroke span
 constexpr float STROKE_SPAN_MM = STROKE_HARD_MAX_MM - STROKE_HARD_MIN_MM;
@@ -64,10 +64,10 @@ constexpr float STROKE_SPAN_MM = STROKE_HARD_MAX_MM - STROKE_HARD_MIN_MM;
 constexpr float POS_TOL_MM = 0.1f;   // enter hold mode
 constexpr float DRIFT_RESTART_MM = 2.0f;   // restart PID
 
-constexpr float HOMING_PWM = 0.40f;          // slow homing
+constexpr float HOMING_PWM = 0.60f;          // slow homing
 constexpr float HOMING_BACKOFF_DUTY = 0.10f;  //even slower correction
-constexpr float SOFT_ZONE_MAX_DUTY = 0.50f;   // slower in soft zone
-constexpr float MIN_DUTY = 0.20f; // ~8%
+constexpr float SOFT_ZONE_MAX_DUTY = 0.80f;   // slower in soft zone
+constexpr float MIN_DUTY = 0.30f; // ~10%
 
 
 /* ----------------------------------------------------------
@@ -88,6 +88,10 @@ constexpr float PID_OUT_LIMIT = 1.0f;
 
 constexpr float TOF_FUSION_GAIN = 0.02f;
 
+// EMA alpha for tof_only position filter (lower = smoother but more lag).
+// 0.3 at ~50 Hz ToF ≈ ~40 ms time constant — filters sensor noise at long range.
+constexpr float TOF_FILTER_ALPHA = 0.2f;
+
 constexpr float SLIP_DETECT_MM = 3.0f;
 constexpr float SLIP_RECOVERY_GAIN = 0.2f;
 
@@ -97,6 +101,11 @@ constexpr float SLIP_RECOVERY_GAIN = 0.2f;
 ---------------------------------------------------------- */
 
 constexpr uint16_t TOF_MIN_VALID_MM = 8;
+
+// Raw ToF backstop: only cross-checks against hard limit when filtered position
+// is already within this many mm of the limit, preventing mid-range noise spikes
+// from causing spurious motor cutoffs.
+constexpr float TOF_BACKSTOP_APPROACH_MM = 5.0f;
 
 
 /* ----------------------------------------------------------
@@ -144,7 +153,7 @@ constexpr float STALL_MIN_DUTY = 0.25f;
 constexpr float STALL_POS_EPS_MM = 0.10f;
 constexpr float STALL_CONFIRM_S = 2.0f;
 constexpr float BMS_TEMP_CONFIRM_S = 2.0f;
-constexpr float HOMING_TIMEOUT_S = 60.0f;
+constexpr float HOMING_TIMEOUT_S = 180.0f;
 
 // debounce
 constexpr float LEAK_DEBOUNCE_S = 0.05f;
