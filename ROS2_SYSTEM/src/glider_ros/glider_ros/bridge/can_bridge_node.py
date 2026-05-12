@@ -19,6 +19,11 @@ VBD_L  = 1
 VBD_R  = 2
 PR     = 3
 
+#VBD stroke geometry — must match Teensy firmware (TEENSY/tsyVBDL/include/config/constants.hpp)
+#firmware maps 0-100% command linearly to STROKE_HARD_MIN_MM..STROKE_HARD_MAX_MM (10..140 mm)
+VBD_STROKE_MIN_MM  = 10.0
+VBD_STROKE_SPAN_MM = 130.0
+
 CMD_BASE      = 0x100
 STATUS_BASE   = 0x200
 FAULT_BASE    = 0x050
@@ -147,7 +152,8 @@ class CanBridgeNode(Node):
             Bool, f'/controller/vbd_{side}_home',
             lambda msg, s=side: setattr(self, f'vbd_{s}_home', msg.data), 10)
 
-        for name, typ in [('pos_mm', Float64), ('tof_mm', Float64), ('leak', Bool),
+        for name, typ in [('pos_mm', Float64), ('pos_pct', Float64),
+                          ('tof_mm', Float64), ('leak', Bool),
                           ('homed', Bool), ('seq', UInt8), ('fault', String),
                           ('status_flags', String), ('motor_current_a', Float64),
                           ('bms_voltage_v', Float64), ('bms_current_a', Float64),
@@ -322,7 +328,11 @@ class CanBridgeNode(Node):
         motor_current_raw = struct.unpack_from('<b', d, 7)[0]
 
         #VBD pos wire units are 0.01 mm/LSB (firmware multiplies by 100); ToF wire units are mm/LSB
-        self._pub_f64(getattr(self, f'pub_vbd_{side}_pos_mm'), pos_raw / 100.0)
+        pos_mm = pos_raw / 100.0
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_pos_mm'), pos_mm)
+        #pos_pct: actual stroke position normalised to commanded 0-100% scale for plotting vs /controller/vbd_*_pct
+        pos_pct = (pos_mm - VBD_STROKE_MIN_MM) * 100.0 / VBD_STROKE_SPAN_MM
+        self._pub_f64(getattr(self, f'pub_vbd_{side}_pos_pct'), pos_pct)
         self._pub_f64(getattr(self, f'pub_vbd_{side}_tof_mm'), float(tof_raw))
         self._pub_f64(getattr(self, f'pub_vbd_{side}_motor_current_a'), motor_current_raw / 10.0)
 
