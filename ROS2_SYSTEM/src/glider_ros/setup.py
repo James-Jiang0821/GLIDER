@@ -51,6 +51,7 @@ setup(
             'imu_adapter_node = glider_ros.adapter.imu_adapter_node:main',
             'sonar_adapter_node = glider_ros.adapter.sonar_adapter_node:main',
             'telemetry_adapter_node = glider_ros.adapter.telemetry_adapter_node:main',
+            'dead_reckoning_node = glider_ros.adapter.dead_reckoning_node:main',
             # Manager
             'state_manager_node = glider_ros.manager.state_manager_node:main',
             # Safety

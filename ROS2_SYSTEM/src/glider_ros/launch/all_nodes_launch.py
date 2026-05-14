@@ -36,12 +36,12 @@ def generate_launch_description():
             parameters=[glider_params],
             output='screen'
         ),
-        # Node(
-        #     package='glider_ros',
-        #     executable='gnss_maxm10s_i2c_node',
-        #     name='gnss_maxm10s_i2c_node',
-        #     output='screen'
-        # ),
+        Node(
+            package='glider_ros',
+            executable='gnss_maxm10s_i2c_node',
+            name='gnss_maxm10s_i2c_node',
+            output='screen'
+        ),
         # LifecycleNode(
         #     package='glider_ros',
         #     executable='communication_iridium_node',
@@ -68,6 +68,13 @@ def generate_launch_description():
             package='glider_ros',
             executable='imu_adapter_node',
             name='imu_adapter_node',
+            parameters=[glider_params],
+            output='screen'
+        ),
+        Node(
+            package='glider_ros',
+            executable='dead_reckoning_node',
+            name='dead_reckoning_node',
             parameters=[glider_params],
             output='screen'
         ),
