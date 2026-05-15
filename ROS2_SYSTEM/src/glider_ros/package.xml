@@ -12,6 +12,9 @@
   <!-- Runtime dependencies -->
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2_ros</depend>
   <depend>glider_msgs</depend>
   <depend>action_msgs</depend>
   <depend>lifecycle_msgs</depend>

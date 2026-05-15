@@ -78,6 +78,13 @@ def generate_launch_description():
             parameters=[glider_params],
             output='screen'
         ),
+        Node(
+            package='glider_ros',
+            executable='pose_viz_node',
+            name='pose_viz_node',
+            parameters=[glider_params],
+            output='screen'
+        ),
         # Node(
         #     package='glider_ros',
         #     executable='sonar_adapter_node',

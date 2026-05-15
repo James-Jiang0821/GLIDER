@@ -273,7 +273,7 @@ class DeadReckoningNode(Node):
                 self._north_geom_m += speed_geom * cos_h * dt
                 self._east_accel_m += speed_accel * sin_h * dt
                 self._north_accel_m += speed_accel * cos_h * dt
-        self.last_integrate_t = now_s 
+        self._last_integrate_t = now_s
 
         self._publish_local(self._local_geom_pub, self._east_geom_m, self._north_geom_m, "dr_origin")
         self._publish_local(self._local_accel_pub, self._east_accel_m, self._north_accel_m, "dr_origin")
