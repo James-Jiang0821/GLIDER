@@ -38,6 +38,9 @@ class _CapturePub:
 
 def _make_adapter():
     node = ImuAdapterNode()
+    node._mount_calibrated = True
+    node.mount_pitch_offset_rad = 0.0
+    node.mount_roll_offset_rad = 0.0
     pubs = {
         '_roll_pub': _CapturePub(),
         '_pitch_pub': _CapturePub(),

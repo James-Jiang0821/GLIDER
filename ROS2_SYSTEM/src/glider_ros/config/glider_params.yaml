@@ -112,9 +112,16 @@ imu_minimu_node:
 #-----------------------------------------------------------------------------
 imu_adapter_node:
   ros__parameters:
-    #Measured once on a level surface; subtracted from raw roll/pitch.
-    mount_pitch_offset_rad: 0.0
-    mount_roll_offset_rad: 0.0
+    #Stationary samples averaged at startup (and on /imu/mount_zero) to fix roll/pitch offsets.
+    mount_offset_samples: 250
+
+    #Per-axis variance ceiling (rad^2); exceeded -> motion assumed, cal restarts.
+    mount_offset_max_var: 0.0001
+
+    publish_during_cal: false
+
+    comp_alpha: 0.98
+    comp_dt_max_s: 0.2
 
 #-----------------------------------------------------------------------------
 #Dead Reckoning Node
