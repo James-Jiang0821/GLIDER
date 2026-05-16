@@ -153,6 +153,27 @@ dead_reckoning_node:
 
     imu_topic: "/imu/data_raw"
 
+    #skip GPS wait and latch DR origin at (0,0) on boot.
+    start_without_gps: true
+
+#-----------------------------------------------------------------------------
+#Pose Viz Node
+#-----------------------------------------------------------------------------
+pose_viz_node:
+  ros__parameters:
+    publish_rate_hz: 20.0
+    parent_frame: "map"
+    child_frame: "base_link"
+
+    mesh_resource: "package://glider_ros/meshes/glider.stl"
+
+    #1.0 if STL is in metres, 0.001 if it's in millimetres
+    mesh_scale: 1.0
+
+    #only used when mesh_resource is empty
+    hull_length_m: 1.5
+    hull_diameter_m: 0.15
+
 #-----------------------------------------------------------------------------
 #Mission Node
 #-----------------------------------------------------------------------------

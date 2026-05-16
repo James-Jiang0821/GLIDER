@@ -25,6 +25,10 @@ setup(
             os.path.join('share', package_name, 'config'),
             glob('config/*.yaml')
         ),
+        (
+            os.path.join('share', package_name, 'meshes'),
+            glob('meshes/*.stl') + glob('meshes/*.dae')
+        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

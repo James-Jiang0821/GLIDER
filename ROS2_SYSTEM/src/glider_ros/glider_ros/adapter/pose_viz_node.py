@@ -34,12 +34,17 @@ class PoseVizNode(Node):
         self.declare_parameter("child_frame", "base_link")
         self.declare_parameter("hull_length_m", 1.5)
         self.declare_parameter("hull_diameter_m", 0.15)
+        self.declare_parameter("mesh_resource", "package://glider_ros/meshes/glider.stl")
+        #STL authored in metres -> 1.0; STL in millimetres -> 0.001
+        self.declare_parameter("mesh_scale", 1.0)
 
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         self.parent_frame = str(self.get_parameter("parent_frame").value)
         self.child_frame = str(self.get_parameter("child_frame").value)
         self.hull_length_m = float(self.get_parameter("hull_length_m").value)
         self.hull_diameter_m = float(self.get_parameter("hull_diameter_m").value)
+        self.mesh_resource = str(self.get_parameter("mesh_resource").value)
+        self.mesh_scale = float(self.get_parameter("mesh_scale").value)
 
         self._roll: float = 0.0
         self._pitch: float = 0.0
@@ -107,36 +112,27 @@ class PoseVizNode(Node):
         hull.header.frame_id = self.child_frame
         hull.ns = "glider"
         hull.id = 0
-        hull.type = Marker.CUBE
         hull.action = Marker.ADD
         hull.pose.orientation.w = 1.0
-        hull.scale.x = self.hull_length_m
-        hull.scale.y = self.hull_diameter_m
-        hull.scale.z = self.hull_diameter_m
         hull.color.r = 0.9
         hull.color.g = 0.9
         hull.color.b = 0.2
         hull.color.a = 1.0
-        self._marker_pub.publish(hull)
 
-        tail = Marker()
-        tail.header.stamp = now
-        tail.header.frame_id = self.child_frame
-        tail.ns = "glider"
-        tail.id = 1
-        tail.type = Marker.CUBE
-        tail.action = Marker.ADD
-        tail.pose.position.x = -self.hull_length_m * 0.5
-        tail.pose.position.z = self.hull_diameter_m * 1.2
-        tail.pose.orientation.w = 1.0
-        tail.scale.x = self.hull_diameter_m * 0.8
-        tail.scale.y = self.hull_diameter_m * 0.2
-        tail.scale.z = self.hull_diameter_m * 1.8
-        tail.color.r = 0.2
-        tail.color.g = 0.4
-        tail.color.b = 0.9
-        tail.color.a = 1.0
-        self._marker_pub.publish(tail)
+        if self.mesh_resource:
+            hull.type = Marker.MESH_RESOURCE
+            hull.mesh_resource = self.mesh_resource
+            hull.mesh_use_embedded_materials = False
+            hull.scale.x = self.mesh_scale
+            hull.scale.y = self.mesh_scale
+            hull.scale.z = self.mesh_scale
+        else:
+            hull.type = Marker.CUBE
+            hull.scale.x = self.hull_length_m
+            hull.scale.y = self.hull_diameter_m
+            hull.scale.z = self.hull_diameter_m
+
+        self._marker_pub.publish(hull)
 
 
 def main(args=None):

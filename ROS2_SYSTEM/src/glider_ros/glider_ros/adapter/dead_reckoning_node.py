@@ -43,6 +43,8 @@ class DeadReckoningNode(Node):
         self.declare_parameter("mag_declination_rad", 0.0)
         self.declare_parameter("accel_bias_x", 0.0)
         self.declare_parameter("imu_topic", "/imu/data_raw")
+        #tank/basement mode: skip waiting for GPS, latch origin at (0,0) so XY integration starts immediately
+        self.declare_parameter("start_without_gps", False)
 
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         self.depth_rate_tau_s = float(self.get_parameter("depth_rate_tau_s").value)
@@ -51,6 +53,7 @@ class DeadReckoningNode(Node):
         self.mag_declination_rad = float(self.get_parameter("mag_declination_rad").value)
         self.accel_bias_x = float(self.get_parameter("accel_bias_x").value)
         self.imu_topic = str(self.get_parameter("imu_topic").value)
+        self.start_without_gps = bool(self.get_parameter("start_without_gps").value)
 
         self._roll: Optional[float] = None
         self._pitch: Optional[float] = None
@@ -97,6 +100,12 @@ class DeadReckoningNode(Node):
 
         period = 1.0 / self.publish_rate_hz if self.publish_rate_hz > 0.0 else 0.2
         self.timer = self.create_timer(period, self._tick)
+
+        if self.start_without_gps:
+            self._origin_lat_deg = 0.0
+            self._origin_lon_deg = 0.0
+            self._m_per_deg_lat, self._m_per_deg_lon = _meters_per_deg(0.0)
+            self.get_logger().info("start_without_gps=true: DR origin latched at (0,0) — XY is local-only, /dr/fix_* will be bogus")
 
         self.get_logger().info(
             f"DR observer started, declination={math.degrees(self.mag_declination_rad):+.2f} deg, "
