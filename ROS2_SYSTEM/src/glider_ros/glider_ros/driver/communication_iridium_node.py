@@ -110,25 +110,10 @@ class IridiumSbdNode(LifecycleNode):
             10
         )
 
-        #serial port
-        try:
-            self.ser = serial.Serial(
-                port=self.port,
-                baudrate=self.baud,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                timeout=self.serial_timeout,
-                xonxoff=False,
-                rtscts=False,
-                dsrdtr=False,
-            )
-            self.publish_status(f"Opened {self.port} at {self.baud} baud")
-            self.log_debug(f"Serial connection opened on {self.port}")
-            self.configure_modem()
-        except Exception as e:
-            self.get_logger().error(f"Failed to open serial port {self.port}: {e}")
+        #serial port — initial open failure fails configure (lifecycle contract)
+        if not self._open_serial():
             return TransitionCallbackReturn.ERROR
+        self.configure_modem()
 
         #action server
         self._action_server = ActionServer(
@@ -150,9 +135,7 @@ class IridiumSbdNode(LifecycleNode):
             self._action_server.destroy()
             self._action_server = None
 
-        if self.ser is not None and self.ser.is_open:
-            self.ser.close()
-        self.ser = None
+        self._close_serial()
 
         #reset outbound state so a fresh cycle starts clean
         with self._lock:
@@ -164,9 +147,56 @@ class IridiumSbdNode(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_shutdown(self, state: State) -> TransitionCallbackReturn:
-        if self.ser is not None and self.ser.is_open:
-            self.ser.close()
+        self._close_serial()
         return TransitionCallbackReturn.SUCCESS
+
+    #serial connection management
+    def _close_serial(self):
+        if self.ser is not None:
+            try:
+                if self.ser.is_open:
+                    self.ser.close()
+            except Exception:
+                pass
+        self.ser = None
+
+    def _open_serial(self) -> bool:
+        """Open the modem serial port. Returns True on success."""
+        self._close_serial()
+        try:
+            self.ser = serial.Serial(
+                port=self.port,
+                baudrate=self.baud,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=self.serial_timeout,
+                xonxoff=False,
+                rtscts=False,
+                dsrdtr=False,
+            )
+            self.publish_status(f"Opened {self.port} at {self.baud} baud")
+            self.log_debug(f"Serial connection opened on {self.port}")
+            return True
+        except Exception as e:
+            self.get_logger().warn(f"Failed to open serial port {self.port}: {e}")
+            self.publish_status(f"serial_open_failed: {e}")
+            self.ser = None
+            return False
+
+    def _ensure_serial_open(self) -> bool:
+        """If serial is closed, try one reconnect + reconfigure. Returns True if usable."""
+        if self.ser is not None and self.ser.is_open:
+            return True
+        self.get_logger().warn("Iridium serial port not open, attempting reconnect")
+        if not self._open_serial():
+            return False
+        #re-issue modem config after a fresh open; failure here doesn't block — attempt may still work
+        try:
+            self.configure_modem()
+        except Exception as e:
+            self.get_logger().warn(f"Modem reconfigure after reconnect failed: {e}")
+        return self.ser is not None and self.ser.is_open
 
     #ROS helpers
     def publish_string(self, publisher, text: str):
@@ -194,11 +224,11 @@ class IridiumSbdNode(LifecycleNode):
 
     #action server callbacks
     def goal_callback(self, goal_request):
-        if self.ser is None or not self.ser.is_open:
-            self.get_logger().warn("Rejecting goal: modem not configured")
-            return GoalResponse.REJECT
         if self._window_in_progress:
             self.get_logger().warn("Rejecting goal: comms window already in progress")
+            return GoalResponse.REJECT
+        if not self._ensure_serial_open():
+            self.get_logger().warn("Rejecting goal: modem serial port unavailable")
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
@@ -307,6 +337,8 @@ class IridiumSbdNode(LifecycleNode):
     #single SBD attempt
     def _run_one_attempt(self, read_mission: bool = True) -> dict:
         """Run one SBD session attempt; returns {'success', 'mt_text', 'status'}."""
+        if not self._ensure_serial_open():
+            return {"success": False, "mt_text": "", "status": "serial port unavailable"}
         try:
             #check modem alive
             at_resp = self.send_command("AT", timeout_s=5.0)
@@ -389,6 +421,12 @@ class IridiumSbdNode(LifecycleNode):
                 "status": f"Session failed (mo_status={sbdix.mo_status})",
             }
 
+        except (serial.SerialException, OSError) as e:
+            error = f"Serial error, will reconnect: {e}"
+            self.get_logger().error(error)
+            self.publish_status(error)
+            self._close_serial()
+            return {"success": False, "mt_text": "", "status": error}
         except Exception as e:
             error = f"Attempt exception: {e}"
             self.get_logger().error(error)

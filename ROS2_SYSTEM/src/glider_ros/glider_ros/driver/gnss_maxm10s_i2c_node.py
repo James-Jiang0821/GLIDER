@@ -164,11 +164,8 @@ class MaxM10sI2CNode(Node):
         self.last_diag_pub = 0.0
         self.debug_printed_proto = False
 
-        self.bus = SMBus(self.i2c_bus_num)
-
-        time.sleep(0.2)
-        self.configure_ubx()
-        time.sleep(0.5)
+        self.bus = None
+        self._connect_bus()
 
         period = 1.0 / max(self.poll_hz, 1e-3)
         self.timer = self.create_timer(period, self.poll_once)
@@ -177,11 +174,31 @@ class MaxM10sI2CNode(Node):
             f"MAX-M10S I2C GNSS started on /dev/i2c-{self.i2c_bus_num}, addr 0x{self.addr:02X}"
         )
 
-    def destroy_node(self):
+    def _close_bus(self):
+        if self.bus is not None:
+            try:
+                self.bus.close()
+            except Exception:
+                pass
+        self.bus = None
+        #parser may hold partial UBX bytes from before the disconnect — drop them
+        self.parser = UbxStreamParser()
+
+    def _connect_bus(self) -> bool:
+        self._close_bus()
         try:
-            self.bus.close()
-        except Exception:
-            pass
+            self.bus = SMBus(self.i2c_bus_num)
+            time.sleep(0.2)
+            self.configure_ubx()
+            time.sleep(0.5)
+            return True
+        except Exception as e:
+            self.get_logger().warn(f"GNSS I2C open failed: {e}")
+            self._close_bus()
+            return False
+
+    def destroy_node(self):
+        self._close_bus()
         super().destroy_node()
 
     def send_ubx(self, cls_id: int, msg_id: int, payload: bytes = b""):
@@ -256,6 +273,11 @@ class MaxM10sI2CNode(Node):
         return bytes(data)
 
     def poll_once(self):
+        if self.bus is None:
+            if not self._connect_bus():
+                self._publish_diag_if_needed(avail=0)
+                return
+
         try:
             avail = self._read_avail()
 
@@ -284,9 +306,11 @@ class MaxM10sI2CNode(Node):
             self._publish_diag_if_needed(avail=avail)
 
         except OSError as e:
-            self.get_logger().warn(f"I2C read error: {e}")
+            self.get_logger().warn(f"I2C read error, will reconnect: {e}")
+            self._close_bus()
         except Exception as e:
-            self.get_logger().warn(f"GNSS node exception: {e}")
+            self.get_logger().warn(f"GNSS node exception, will reconnect: {e}")
+            self._close_bus()
 
     def _publish_pvt(self, pvt: dict):
         now = self.get_clock().now().to_msg()
