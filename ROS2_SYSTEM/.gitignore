@@ -26,3 +26,5 @@ venv/
 *.key
 *.env
 .env
+
+src/glider_ros/meshes/glider.stl
