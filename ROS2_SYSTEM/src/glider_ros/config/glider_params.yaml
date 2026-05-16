@@ -94,6 +94,13 @@ pressure_keller_node:
     #fresh water around 1000, sea water around 1029 kg/m^3
     fluid_density: 1000.0
 
+    #EMA on /pressure/depth; smaller α = more smoothing. α=1.0 disables. We can do 0.1 down if not smoothed
+    depth_filter_alpha: 0.5
+
+    #Reseed filter if gap since last sample exceeds this
+    #since our pressure sensor is 5Hzish, 1s would mean 5 missed values
+    depth_filter_reset_gap_s: 1.0
+
 #-----------------------------------------------------------------------------
 #IMU MinIMU-9 Driver Node
 #-----------------------------------------------------------------------------

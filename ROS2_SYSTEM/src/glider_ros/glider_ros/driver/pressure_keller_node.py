@@ -171,6 +171,10 @@ class KellerPressureNode(Node):
         self.declare_parameter("frame_id", "pressure_link")
         self.declare_parameter("surface_zero_samples", 20)
         self.declare_parameter("depth_offset", 0.0)
+        #EMA on depth; smaller α = more smoothing, α=1.0 disables
+        self.declare_parameter("depth_filter_alpha", 0.2)
+        #reseed filter if gap since last sample exceeds this (e.g. after reconnect)
+        self.declare_parameter("depth_filter_reset_gap_s", 1.0)
 
         self.i2c_bus_num = int(self.get_parameter("i2c_bus").value)
         self.i2c_address = int(self.get_parameter("i2c_address").value)
@@ -179,6 +183,11 @@ class KellerPressureNode(Node):
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.surface_zero_samples = int(self.get_parameter("surface_zero_samples").value)
         self.depth_offset = float(self.get_parameter("depth_offset").value)
+        self.depth_filter_alpha = float(self.get_parameter("depth_filter_alpha").value)
+        self.depth_filter_reset_gap_s = float(self.get_parameter("depth_filter_reset_gap_s").value)
+
+        self._filt_depth_m: Optional[float] = None
+        self._prev_filt_stamp_s: Optional[float] = None
         #reference atmospheric pressure used for depth calculation; overwritten by surface tare
         self.surface_pressure_pa = 101325.0
 
@@ -306,6 +315,19 @@ class KellerPressureNode(Node):
             depth_m = (pressure_pa - self.surface_pressure_pa) / (self.fluid_density * 9.80665) + self.depth_offset
 
             now = self.get_clock().now().to_msg()
+            now_s = now.sec + now.nanosec * 1e-9
+
+            #reseed on first sample or after a long gap
+            alpha = self.depth_filter_alpha
+            if (
+                self._filt_depth_m is None
+                or self._prev_filt_stamp_s is None
+                or (now_s - self._prev_filt_stamp_s) > self.depth_filter_reset_gap_s
+            ):
+                self._filt_depth_m = depth_m
+            else:
+                self._filt_depth_m = alpha * depth_m + (1.0 - alpha) * self._filt_depth_m
+            self._prev_filt_stamp_s = now_s
 
             pressure_msg = FluidPressure()
             pressure_msg.header.stamp = now
@@ -322,7 +344,7 @@ class KellerPressureNode(Node):
             depth_msg = Float64Stamped()
             depth_msg.header.stamp = now
             depth_msg.header.frame_id = self.frame_id
-            depth_msg.data = depth_m
+            depth_msg.data = self._filt_depth_m
 
             self.pressure_pub.publish(pressure_msg)
             self.temperature_pub.publish(temp_msg)
@@ -332,6 +354,8 @@ class KellerPressureNode(Node):
             self.get_logger().warn(f"Pressure read failed, will reconnect: {exc}")
             self.publish_status(f"read_failed: {exc}")
             self._close_bus()
+            self._filt_depth_m = None
+            self._prev_filt_stamp_s = None
 
 
 def main(args=None):
